@@ -15,6 +15,7 @@
   "dependencies": {
     "socks": "^2.8.10",
     "ssh2": "^1.16.0",
+    "telnet-client": "^2.2.14",
     "zmodem2": "^1.4.0"
   },
   "devDependencies": {

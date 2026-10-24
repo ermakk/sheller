@@ -3,7 +3,8 @@ import { IPC } from '../shared/types'
 import type {
   ShellerApi, SessionConnectRequest, ProfileDraft, ConnectionProfile,
   ProfileActionResult, SessionStatusEvent, SessionDataEvent,
-  TunnelsUpdatedEvent, FileTransferProgressEvent, ZmodemEvent, RemoteFile
+  TunnelsUpdatedEvent, FileTransferProgressEvent, ZmodemEvent,
+  RemoteFile, Snippet
 } from '../shared/types'
 
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
@@ -22,17 +23,24 @@ const api: ShellerApi = {
     export: () => ipcRenderer.invoke(IPC.profilesExport),
     import: () => ipcRenderer.invoke(IPC.profilesImport)
   },
+  snippets: {
+    list: () => ipcRenderer.invoke(IPC.snippetsList),
+    save: (data) => ipcRenderer.invoke(IPC.snippetsSave, data),
+    remove: (id) => ipcRenderer.invoke(IPC.snippetsRemove, id)
+  },
   sessions: {
     connect: (req: SessionConnectRequest) => ipcRenderer.invoke(IPC.sessionConnect, req),
     disconnect: (id) => ipcRenderer.invoke(IPC.sessionDisconnect, id),
     detach: (sessionId, profileId) => ipcRenderer.invoke(IPC.sessionDetach, sessionId, profileId),
+    attach: (sessionId, profileId) => ipcRenderer.send(IPC.sessionAttach, sessionId, profileId),
     write: (id, data) => ipcRenderer.send(IPC.sessionWrite, id, data),
     resize: (id, cols, rows) => ipcRenderer.send(IPC.sessionResize, id, cols, rows),
     startTunnel: (sid, tid) => ipcRenderer.invoke(IPC.sessionStartTunnel, sid, tid),
     stopTunnel: (sid, tid) => ipcRenderer.invoke(IPC.sessionStopTunnel, sid, tid),
     providePassword: (sid, pwd) => { ipcRenderer.send(IPC.sessionRequestPassword, sid, pwd); return Promise.resolve() },
-    provideHostKey: (sid, accept) => { ipcRenderer.send(IPC.sessionRequestHostKey, sid, accept); return Promise.resolve() },    
-    attach: (sessionId, profileId) => ipcRenderer.send(IPC.sessionAttach, sessionId, profileId),
+    provideHostKey: (sid, accept) => { ipcRenderer.send(IPC.sessionRequestHostKey, sid, accept); return Promise.resolve() },
+    cronList: (sessionId) => ipcRenderer.invoke(IPC.cronList, sessionId),
+    cronSave: (sessionId, jobs) => ipcRenderer.invoke(IPC.cronSave, sessionId, jobs),
   },
   events: {
     onData: (fn) => subscribe<SessionDataEvent>(IPC.eventData, fn),
@@ -42,7 +50,7 @@ const api: ShellerApi = {
     onZmodem: (fn) => subscribe<ZmodemEvent>(IPC.eventZmodem, fn),
     onHostKeyVerify: (fn) => subscribe<{ sessionId: string; hostKey: string }>(IPC.eventHostKeyVerify, fn),
     onRequestPassword: (fn) => subscribe<{ sessionId: string }>(IPC.eventRequestPassword, fn),
-    onAttach: (fn) => subscribe<{ sessionId: string; profileId: string }>(IPC.eventAttach, fn),
+    onAttach: (fn) => subscribe<{ sessionId: string; profileId: string }>(IPC.eventAttach, fn)
   },
   files: {
     pickUpload: (type) => ipcRenderer.invoke(IPC.sessionPickUpload, type),

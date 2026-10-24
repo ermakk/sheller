@@ -8,7 +8,8 @@ import type {
   ProfileDraft,
   TunnelConfig,
   TunnelType,
-  ProxyType
+  ProxyType,
+  Protocol
 } from '../shared/types'
 
 interface StoredSecret { scheme: 'safe' | 'plain'; data: string }
@@ -17,6 +18,7 @@ interface StoredProfile {
   id: string
   name: string
   group: string
+  protocol: Protocol
   host: string
   port: number
   username: string
@@ -50,6 +52,7 @@ export interface ResolvedProfile extends ConnectionProfile {
 const TUNNEL_TYPES: TunnelType[] = ['local', 'remote', 'dynamic']
 const AUTH_METHODS: AuthMethod[] = ['password', 'key', 'agent']
 const PROXY_TYPES: ProxyType[] = ['none', 'socks5', 'http']
+const PROTOCOLS: Protocol[] = ['ssh', 'telnet']
 
 export class ProfileStore {
   private data: StoreFile = { version: 1, profiles: [] }
@@ -140,6 +143,7 @@ export class ProfileStore {
       id,
       name: draft.name,
       group: draft.group,
+      protocol: draft.protocol,
       host: draft.host,
       port: draft.port,
       username: draft.username,
@@ -184,6 +188,7 @@ export class ProfileStore {
       id,
       name: draft.name,
       group: draft.group,
+      protocol: draft.protocol,
       host: draft.host,
       port: draft.port,
       username: draft.username,
@@ -254,7 +259,6 @@ export class ProfileStore {
     try {
       const parsed = JSON.parse(json)
       if (!parsed || !Array.isArray(parsed.profiles)) throw new Error('Неверный формат')
-      
       const newProfiles = parsed.profiles.map((p: any) => ({
         ...p,
         id: randomUUID(),
@@ -262,7 +266,6 @@ export class ProfileStore {
         updatedAt: new Date().toISOString(),
         lastUsedAt: undefined
       }))
-      
       this.data.profiles.push(...newProfiles)
       await this.persist()
     } catch (e) {
@@ -283,6 +286,7 @@ export class ProfileStore {
       id: p.id,
       name: p.name,
       group: p.group || '',
+      protocol: p.protocol || 'ssh',
       host: p.host,
       port: p.port,
       username: p.username,
@@ -314,6 +318,7 @@ export class ProfileStore {
     if (!host) throw new Error('Укажите адрес сервера')
     if (!username) throw new Error('Укажите имя пользователя')
     
+    const protocol = PROTOCOLS.includes(input.protocol) ? input.protocol : 'ssh'
     const port = Number(input.port)
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Неверный порт')
 
@@ -337,6 +342,7 @@ export class ProfileStore {
     return {
       name,
       group: String(input.group ?? '').trim(),
+      protocol,
       host,
       port,
       username,

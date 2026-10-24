@@ -7,6 +7,13 @@ export const IPC = {
   profilesExport: 'profiles:export',
   profilesImport: 'profiles:import',
   
+  snippetsList: 'snippets:list',
+  snippetsSave: 'snippets:save',
+  snippetsRemove: 'snippets:remove',
+  
+  cronList: 'cron:list',
+  cronSave: 'cron:save',
+
   sessionConnect: 'session:connect',
   sessionDisconnect: 'session:disconnect',
   sessionWrite: 'session:write',
@@ -14,6 +21,7 @@ export const IPC = {
   sessionStartTunnel: 'session:start-tunnel',
   sessionStopTunnel: 'session:stop-tunnel',
   sessionDetach: 'session:detach',
+  sessionAttach: 'session:attach',
   sessionRequestPassword: 'session:request-password',
   sessionRequestHostKey: 'session:request-hostkey',
   
@@ -24,6 +32,7 @@ export const IPC = {
   eventZmodem: 'event:session-zmodem',
   eventHostKeyVerify: 'event:hostkey-verify',
   eventRequestPassword: 'event:request-password',
+  eventAttach: 'event:session-attach',
   
   clipboardRead: 'clipboard:read',
   clipboardWrite: 'clipboard:write',
@@ -36,10 +45,7 @@ export const IPC = {
   sessionCancelTransfer: 'session:cancel-transfer',
   sessionDeleteRemote: 'session:delete-remote',
   sessionMkdirRemote: 'session:mkdir-remote',
-  sessionRenameRemote: 'session:rename-remote',
-  
-  sessionAttach: 'session:attach',
-  eventAttach: 'event:session-attach',
+  sessionRenameRemote: 'session:rename-remote'
 } as const
 
 export type AuthMethod = 'password' | 'key' | 'agent'
@@ -48,6 +54,21 @@ export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error'
 export type SessionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 export type TransferDirection = 'upload' | 'download'
 export type ProxyType = 'none' | 'socks5' | 'http'
+export type Protocol = 'ssh' | 'telnet'
+
+export interface Snippet {
+  id: string
+  name: string
+  command: string
+  group?: string
+}
+
+
+export interface CronJob {
+  id: string
+  schedule: string
+  command: string
+}
 
 export interface FileTransferProgressEvent {
   transferId: string
@@ -91,6 +112,7 @@ export interface ConnectionProfile {
   id: string
   name: string
   group: string
+  protocol: Protocol
   host: string
   port: number
   username: string
@@ -116,6 +138,7 @@ export interface ConnectionProfile {
 export interface ProfileDraft {
   name: string
   group: string
+  protocol: Protocol
   host: string
   port: number
   username: string
@@ -188,17 +211,25 @@ export interface ShellerApi {
     export: () => Promise<ApiResult>
     import: () => Promise<ApiResult>
   }
+  snippets: {
+    list: () => Promise<Snippet[]>
+    save: (snippet: Omit<Snippet, 'id'> & { id?: string }) => Promise<ApiResult>
+    remove: (id: string) => Promise<ApiResult>
+  }
   sessions: {
     connect: (request: SessionConnectRequest) => Promise<ApiResult>
     disconnect: (sessionId: string) => Promise<void>
     detach: (sessionId: string, profileId: string) => Promise<void>
+    attach: (sessionId: string, profileId: string) => void
     write: (sessionId: string, data: string) => void
     resize: (sessionId: string, cols: number, rows: number) => void
     startTunnel: (sessionId: string, tunnelId: string) => Promise<ApiResult>
     stopTunnel: (sessionId: string, tunnelId: string) => Promise<ApiResult>
     providePassword: (sessionId: string, password: string) => Promise<void>
     provideHostKey: (sessionId: string, accept: boolean) => Promise<void>
-    attach: (sessionId: string, profileId: string) => void
+    
+    cronList: (sessionId: string) => Promise<CronJob[]>
+    cronSave: (sessionId: string, jobs: CronJob[]) => Promise<ApiResult>
   }
   events: {
     onData: (listener: (event: SessionDataEvent) => void) => () => void

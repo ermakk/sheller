@@ -3852,3 +3852,10 @@ select:focus-visible,
   background: rgba(251, 113, 133, 0.15);
   color: var(--danger);
 }
+
+/* Стили для панели сниппетов */
+
+/* Кнопка Cron в модалке */
+.file-transfer-form .button-secondary {
+  background: rgba(255,255,255,0.05);
+}

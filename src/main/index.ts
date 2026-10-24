@@ -1,30 +1,26 @@
 import {
-  app,
-  BrowserWindow,
-  clipboard,
-  dialog,
-  ipcMain,
-  Menu,
-  session as electronSession,
-  shell,
+  app, BrowserWindow, clipboard, dialog, ipcMain, Menu,
+  session as electronSession, shell, Tray, nativeImage,
   type OpenDialogOptions
 } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '../shared/types'
 import type {
-  ConnectionProfile,
-  ProfileActionResult,
-  ProfileDraft,
-  SessionConnectRequest
+  ConnectionProfile, ProfileActionResult, ProfileDraft,
+  SessionConnectRequest, Snippet
 } from '../shared/types'
 import { ProfileStore } from './profiles'
+import { SnippetStore } from './snippets'
 import { describeError, SessionManager } from './sessions'
 
 const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 let store: ProfileStore
+let snippetStore: SnippetStore
 let manager: SessionManager
+let isQuitting = false
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -36,69 +32,58 @@ function broadcast(channel: string, payload: unknown): void {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1320,
-    height: 840,
-    minWidth: 980,
-    minHeight: 620,
-    show: false,
-    backgroundColor: '#080b11',
-    autoHideMenuBar: true,
-    ...(process.platform === 'win32'
-      ? {
-          titleBarStyle: 'hidden' as const,
-          titleBarOverlay: {
-            color: '#0a0e15',
-            symbolColor: '#93a0b8',
-            height: 44
-          }
-        }
-      : {}),
+    width: 1320, height: 840, minWidth: 980, minHeight: 620, show: false,
+    backgroundColor: '#080b11', autoHideMenuBar: true,
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: { color: '#0a0e15', symbolColor: '#93a0b8', height: 44 }
+    } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
+      contextIsolation: true, nodeIntegration: false, sandbox: true
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  
+  // [NEW] Обработка закрытия в трей
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
   })
 
   mainWindow.on('closed', () => {
-    manager?.dispose()
     mainWindow = null
   })
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    openExternal(url)
-    return { action: 'deny' }
-  })
+  if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+}
 
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const rendererUrl = process.env.ELECTRON_RENDERER_URL
-    if (rendererUrl && url.startsWith(rendererUrl)) return
-    if (url.startsWith('file://')) return
-    event.preventDefault()
-    openExternal(url)
-  })
-
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+function createTray() {
+  // Используем иконку из ресурсов или создаем пустую
+  const iconPath = join(__dirname, '../../build/icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 16, height: 16 }))
+  
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Показать Sheller', click: () => { mainWindow?.show(); mainWindow?.focus() } },
+    { type: 'separator' },
+    { label: 'Выход', click: () => { isQuitting = true; app.quit() } }
+  ])
+  
+  tray.setToolTip('Sheller')
+  tray.setContextMenu(contextMenu)
+  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus() })
 }
 
 function openExternal(url: string): void {
   try {
     const parsed = new URL(url)
-    if (['https:', 'http:', 'mailto:'].includes(parsed.protocol)) {
-      void shell.openExternal(url)
-    }
-  } catch {
-    undefined
-  }
+    if (['https:', 'http:', 'mailto:'].includes(parsed.protocol)) void shell.openExternal(url)
+  } catch { undefined }
 }
 
 function profileError(error: unknown): ProfileActionResult {
@@ -108,305 +93,175 @@ function profileError(error: unknown): ProfileActionResult {
 function registerIpc(): void {
   // --- Профили ---
   ipcMain.handle(IPC.profilesList, async (): Promise<ConnectionProfile[]> => store.list())
-
-  ipcMain.handle(
-    IPC.profilesSave,
-    async (_event, id: unknown, draft: ProfileDraft): Promise<ProfileActionResult> => {
-      try {
-        const profile =
-          typeof id === 'string' ? await store.update(id, draft) : await store.create(draft)
-        return { ok: true, profile }
-      } catch (error) {
-        return profileError(error)
-      }
-    }
-  )
-
-  ipcMain.handle(
-    IPC.profilesRemove,
-    async (_event, id: unknown): Promise<ProfileActionResult> => {
-      try {
-        if (typeof id !== 'string') throw new Error('Некорректный идентификатор подключения')
-        await store.remove(id)
-        return { ok: true }
-      } catch (error) {
-        return profileError(error)
-      }
-    }
-  )
-
-  ipcMain.handle(
-    IPC.profilesDuplicate,
-    async (_event, id: unknown): Promise<ProfileActionResult> => {
-      try {
-        if (typeof id !== 'string') throw new Error('Некорректный идентификатор подключения')
-        const profile = await store.duplicate(id)
-        return { ok: true, profile }
-      } catch (error) {
-        return profileError(error)
-      }
-    }
-  )
-
-  ipcMain.handle(IPC.profilesPickKey, async (): Promise<string | null> => {
-    const options: OpenDialogOptions = {
-      title: 'Выберите приватный ключ',
-      defaultPath: join(app.getPath('home'), '.ssh'),
-      properties: ['openFile'],
-      filters: [
-        { name: 'SSH keys', extensions: ['*'] },
-        { name: 'All files', extensions: ['*'] }
-      ]
-    }
-    const result = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, options)
-      : await dialog.showOpenDialog(options)
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
+  ipcMain.handle(IPC.profilesSave, async (_event, id: unknown, draft: ProfileDraft): Promise<ProfileActionResult> => {
+    try {
+      const profile = typeof id === 'string' ? await store.update(id, draft) : await store.create(draft)
+      return { ok: true, profile }
+    } catch (error) { return profileError(error) }
   })
-
+  ipcMain.handle(IPC.profilesRemove, async (_event, id: unknown): Promise<ProfileActionResult> => {
+    try {
+      if (typeof id !== 'string') throw new Error('Неверный ID')
+      await store.remove(id); return { ok: true }
+    } catch (error) { return profileError(error) }
+  })
+  ipcMain.handle(IPC.profilesDuplicate, async (_event, id: unknown): Promise<ProfileActionResult> => {
+    try {
+      if (typeof id !== 'string') throw new Error('Неверный ID')
+      const profile = await store.duplicate(id); return { ok: true, profile }
+    } catch (error) { return profileError(error) }
+  })
+  ipcMain.handle(IPC.profilesPickKey, async (): Promise<string | null> => {
+    const opts: OpenDialogOptions = { title: 'Выберите приватный ключ', defaultPath: join(app.getPath('home'), '.ssh'), properties: ['openFile'] }
+    const r = mainWindow ? await dialog.showOpenDialog(mainWindow, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
   ipcMain.handle(IPC.profilesExport, async () => {
     try {
       const json = await store.exportProfiles()
-      const result = mainWindow
-        ? await dialog.showSaveDialog(mainWindow, { title: 'Экспорт профилей', defaultPath: 'sheller_profiles.json' })
-        : await dialog.showSaveDialog({ title: 'Экспорт профилей', defaultPath: 'sheller_profiles.json' })
-      if (result.canceled || !result.filePath) return { ok: false, error: 'Отменено' }
-      await fs.writeFile(result.filePath, json, 'utf8')
+      const r = mainWindow ? await dialog.showSaveDialog(mainWindow, { defaultPath: 'sheller_profiles.json' }) : await dialog.showSaveDialog({ defaultPath: 'sheller_profiles.json' })
+      if (r.canceled || !r.filePath) return { ok: false, error: 'Отменено' }
+      await fs.writeFile(r.filePath, json, 'utf8')
       return { ok: true }
+    } catch (e) { return { ok: false, error: describeError(e) } }
+  })
+  ipcMain.handle(IPC.profilesImport, async () => {
+    try {
+      const r = mainWindow ? await dialog.showOpenDialog(mainWindow, { properties: ['openFile'] }) : await dialog.showOpenDialog({ properties: ['openFile'] })
+      if (r.canceled || r.filePaths.length === 0) return { ok: false, error: 'Отменено' }
+      const json = await fs.readFile(r.filePaths[0], 'utf8')
+      await store.importProfiles(json)
+      return { ok: true }
+    } catch (e) { return { ok: false, error: describeError(e) } }
+  })
+
+  // --- Сниппеты ---
+  ipcMain.handle(IPC.snippetsList, async (): Promise<Snippet[]> => snippetStore.list())
+  ipcMain.handle(IPC.snippetsSave, async (_event, data: Omit<Snippet, 'id'> & { id?: string }) => {
+    try {
+      const snippet = await snippetStore.save(data)
+      return { ok: true, snippet }
     } catch (e) {
       return { ok: false, error: describeError(e) }
     }
   })
-
-  ipcMain.handle(IPC.profilesImport, async () => {
+  ipcMain.handle(IPC.snippetsRemove, async (_event, id: unknown) => {
     try {
-      const result = mainWindow
-        ? await dialog.showOpenDialog(mainWindow, { title: 'Импорт профилей', properties: ['openFile'] })
-        : await dialog.showOpenDialog({ title: 'Импорт профилей', properties: ['openFile'] })
-      if (result.canceled || result.filePaths.length === 0) return { ok: false, error: 'Отменено' }
-      const json = await fs.readFile(result.filePaths[0], 'utf8')
-      await store.importProfiles(json)
+      if (typeof id !== 'string') throw new Error('Неверный ID')
+      await snippetStore.remove(id)
       return { ok: true }
-    } catch (e) {
-      return { ok: false, error: describeError(e) }
+    } catch (e) { return { ok: false, error: describeError(e) } }
+  })
+
+  ipcMain.handle(IPC.cronList, async (_e, sessionId: unknown) => {
+    if (typeof sessionId !== 'string') throw new Error('Неверный ID сессии')
+    return manager.cronList(sessionId)
+  })
+
+  ipcMain.handle(IPC.cronSave, async (_e, sessionId: unknown, jobs: unknown) => {
+    if (typeof sessionId !== 'string' || !Array.isArray(jobs)) {
+      return { ok: false, error: 'Неверный запрос' }
     }
+    return manager.cronSave(sessionId, jobs as any)
   })
 
   // --- Сессии и Окна ---
-  ipcMain.handle(IPC.sessionConnect, async (_event, request: SessionConnectRequest) => {
-    return manager.connect(request)
-  })
-
+  ipcMain.handle(IPC.sessionConnect, async (_event, request: SessionConnectRequest) => manager.connect(request))
   ipcMain.handle(IPC.sessionDisconnect, async (_event, sessionId: unknown) => {
     if (typeof sessionId === 'string') await manager.disconnect(sessionId)
   })
-
   ipcMain.handle(IPC.sessionDetach, async (_event, sessionId: unknown, profileId: unknown) => {
     if (typeof sessionId !== 'string' || typeof profileId !== 'string') return
     const win = new BrowserWindow({
-      width: 1100,
-      height: 750,
-      show: false,
-      backgroundColor: '#080b11',
-      autoHideMenuBar: true,
-      ...(process.platform === 'win32'
-        ? {
-            titleBarStyle: 'hidden' as const,
-            titleBarOverlay: { color: '#0a0e15', symbolColor: '#93a0b8', height: 44 }
-          }
-        : {}),
-      webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true
-      }
+      width: 1100, height: 750, show: false, backgroundColor: '#080b11', autoHideMenuBar: true,
+      ...(process.platform === 'win32' ? {
+        titleBarStyle: 'hidden' as const,
+        titleBarOverlay: { color: '#0a0e15', symbolColor: '#93a0b8', height: 44 }
+      } : {}),
+      webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
     win.on('ready-to-show', () => win.show())
-
     ;(win as any)._attached = false
     win.on('closed', () => {
-      if (!(win as any)._attached) {
-        void manager.disconnect(sessionId)
-      }
+      if (!(win as any)._attached) void manager.disconnect(sessionId)
     })
-
-    if (process.env.ELECTRON_RENDERER_URL) {
-      void win.loadURL(
-        `${process.env.ELECTRON_RENDERER_URL}?detached=${sessionId}&profileId=${profileId}`
-      )
-    } else {
-      void win.loadFile(join(__dirname, '../renderer/index.html'), {
-        query: { detached: sessionId, profileId }
-      })
-    }
+    if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?detached=${sessionId}&profileId=${profileId}`)
+    else void win.loadFile(join(__dirname, '../renderer/index.html'), { query: { detached: sessionId, profileId } })
   })
-
   ipcMain.on(IPC.sessionAttach, (event, sessionId: string, profileId: string) => {
     if (typeof sessionId !== 'string' || typeof profileId !== 'string') return
     const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      ;(win as any)._attached = true
-      win.close()
-    }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(IPC.eventAttach, { sessionId, profileId })
-    }
+    if (win) { ;(win as any)._attached = true; win.close() }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.eventAttach, { sessionId, profileId })
   })
-
-  ipcMain.on(IPC.sessionWrite, (_event, sessionId: unknown, data: unknown) => {
-    if (typeof sessionId === 'string' && typeof data === 'string') {
-      manager.write(sessionId, data)
-    }
+  ipcMain.on(IPC.sessionWrite, (_e, id: unknown, data: unknown) => {
+    if (typeof id === 'string' && typeof data === 'string') manager.write(id, data)
   })
-
-  ipcMain.on(IPC.sessionResize, (_event, sessionId: unknown, cols: unknown, rows: unknown) => {
-    if (typeof sessionId === 'string' && typeof cols === 'number' && typeof rows === 'number') {
-      manager.resize(sessionId, cols, rows)
-    }
+  ipcMain.on(IPC.sessionResize, (_e, id: unknown, cols: unknown, rows: unknown) => {
+    if (typeof id === 'string' && typeof cols === 'number' && typeof rows === 'number') manager.resize(id, cols, rows)
   })
 
   // --- Туннели ---
-  ipcMain.handle(
-    IPC.sessionStartTunnel,
-    async (_event, sessionId: unknown, tunnelId: unknown) => {
-      if (typeof sessionId !== 'string' || typeof tunnelId !== 'string') {
-        return { ok: false, error: 'Некорректный запрос туннеля' }
-      }
-      return manager.startTunnel(sessionId, tunnelId)
-    }
-  )
-
-  ipcMain.handle(
-    IPC.sessionStopTunnel,
-    async (_event, sessionId: unknown, tunnelId: unknown) => {
-      if (typeof sessionId !== 'string' || typeof tunnelId !== 'string') {
-        return { ok: false, error: 'Некорректный запрос туннеля' }
-      }
-      return manager.stopTunnel(sessionId, tunnelId)
-    }
-  )
+  ipcMain.handle(IPC.sessionStartTunnel, async (_e, sid, tid) => {
+    if (typeof sid !== 'string' || typeof tid !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.startTunnel(sid, tid)
+  })
+  ipcMain.handle(IPC.sessionStopTunnel, async (_e, sid, tid) => {
+    if (typeof sid !== 'string' || typeof tid !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.stopTunnel(sid, tid)
+  })
 
   // --- Файлы (SFTP) ---
-  ipcMain.handle(IPC.sessionPickUpload, async (_event, type: unknown): Promise<string[]> => {
-    const isDirectory = type === 'directory'
-    const options: OpenDialogOptions = {
-      title: isDirectory ? 'Выберите папку для загрузки' : 'Выберите файлы для загрузки',
-      properties: isDirectory ? ['openDirectory'] : ['openFile', 'multiSelections']
-    }
-    const result = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, options)
-      : await dialog.showOpenDialog(options)
-    return result.canceled ? [] : result.filePaths
+  ipcMain.handle(IPC.sessionPickUpload, async (_e, type: unknown) => {
+    const isDir = type === 'directory'
+    const opts: OpenDialogOptions = { properties: isDir ? ['openDirectory'] : ['openFile', 'multiSelections'] }
+    const r = mainWindow ? await dialog.showOpenDialog(mainWindow, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled ? [] : r.filePaths
   })
-
-  ipcMain.handle(IPC.sessionPickDownload, async (): Promise<string | null> => {
-    const options = {
-      title: 'Выберите папку для сохранения',
-      properties: ['openDirectory', 'createDirectory'] as const
-    }
-    const result = mainWindow
-      ? await dialog.showOpenDialog(mainWindow, options)
-      : await dialog.showOpenDialog(options)
-    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  ipcMain.handle(IPC.sessionPickDownload, async () => {
+    const opts = { properties: ['openDirectory', 'createDirectory'] as const }
+    const r = mainWindow ? await dialog.showOpenDialog(mainWindow, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
-
-  ipcMain.handle(
-    IPC.sessionListRemote,
-    async (_event, sessionId: unknown, remotePath: unknown) => {
-      if (typeof sessionId !== 'string' || typeof remotePath !== 'string') {
-        throw new Error('Некорректный запрос')
-      }
-      return manager.listRemote(sessionId, remotePath)
-    }
-  )
-
-  ipcMain.handle(
-    IPC.sessionUpload,
-    async (_event, sessionId: unknown, localPath: unknown, remotePath: unknown, transferId: unknown) => {
-      if (
-        typeof sessionId !== 'string' ||
-        typeof localPath !== 'string' ||
-        typeof remotePath !== 'string' ||
-        typeof transferId !== 'string'
-      ) {
-        return { ok: false, error: 'Некорректный запрос загрузки' }
-      }
-      return manager.uploadPath(sessionId, localPath, remotePath, transferId)
-    }
-  )
-
-  ipcMain.handle(
-    IPC.sessionDownload,
-    async (_event, sessionId: unknown, remotePath: unknown, localPath: unknown, transferId: unknown) => {
-      if (
-        typeof sessionId !== 'string' ||
-        typeof remotePath !== 'string' ||
-        typeof localPath !== 'string' ||
-        typeof transferId !== 'string'
-      ) {
-        return { ok: false, error: 'Некорректный запрос скачивания' }
-      }
-      return manager.downloadPath(sessionId, remotePath, localPath, transferId)
-    }
-  )
-
-  ipcMain.handle(IPC.sessionCancelTransfer, async (_event, transferId: unknown) => {
-    if (typeof transferId === 'string') await manager.cancelTransfer(transferId)
+  ipcMain.handle(IPC.sessionListRemote, async (_e, sid, path) => {
+    if (typeof sid !== 'string' || typeof path !== 'string') throw new Error('Неверный запрос')
+    return manager.listRemote(sid, path)
   })
-
-  ipcMain.handle(
-    IPC.sessionDeleteRemote,
-    async (_event, sessionId: unknown, remotePath: unknown) => {
-      if (typeof sessionId !== 'string' || typeof remotePath !== 'string') {
-        return { ok: false, error: 'Некорректный запрос' }
-      }
-      return manager.deleteRemote(sessionId, remotePath)
-    }
-  )
-
-  ipcMain.handle(
-    IPC.sessionMkdirRemote,
-    async (_event, sessionId: unknown, remotePath: unknown) => {
-      if (typeof sessionId !== 'string' || typeof remotePath !== 'string') {
-        return { ok: false, error: 'Некорректный запрос' }
-      }
-      return manager.mkdirRemote(sessionId, remotePath)
-    }
-  )
-
-  ipcMain.handle(
-    IPC.sessionRenameRemote,
-    async (_event, sessionId: unknown, oldPath: unknown, newPath: unknown) => {
-      if (typeof sessionId !== 'string' || typeof oldPath !== 'string' || typeof newPath !== 'string') {
-        return { ok: false, error: 'Некорректный запрос' }
-      }
-      return manager.renameRemote(sessionId, oldPath, newPath)
-    }
-  )
+  ipcMain.handle(IPC.sessionUpload, async (_e, sid, lp, rp, tid) => {
+    if (typeof sid !== 'string' || typeof lp !== 'string' || typeof rp !== 'string' || typeof tid !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.uploadPath(sid, lp, rp, tid)
+  })
+  ipcMain.handle(IPC.sessionDownload, async (_e, sid, rp, lp, tid) => {
+    if (typeof sid !== 'string' || typeof rp !== 'string' || typeof lp !== 'string' || typeof tid !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.downloadPath(sid, rp, lp, tid)
+  })
+  ipcMain.handle(IPC.sessionCancelTransfer, async (_e, tid) => {
+    if (typeof tid === 'string') await manager.cancelTransfer(tid)
+  })
+  ipcMain.handle(IPC.sessionDeleteRemote, async (_e, sid, path) => {
+    if (typeof sid !== 'string' || typeof path !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.deleteRemote(sid, path)
+  })
+  ipcMain.handle(IPC.sessionMkdirRemote, async (_e, sid, path) => {
+    if (typeof sid !== 'string' || typeof path !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.mkdirRemote(sid, path)
+  })
+  ipcMain.handle(IPC.sessionRenameRemote, async (_e, sid, op, np) => {
+    if (typeof sid !== 'string' || typeof op !== 'string' || typeof np !== 'string') return { ok: false, error: 'Неверный запрос' }
+    return manager.renameRemote(sid, op, np)
+  })
 
   // --- Асинхронные ответы ---
-  ipcMain.on(IPC.sessionRequestPassword, (_event, sessionId: string, password: string) => {
-    if (typeof sessionId === 'string' && typeof password === 'string') {
-      void manager.providePassword(sessionId, password)
-    }
+  ipcMain.on(IPC.sessionRequestPassword, (_e, sid: string, pwd: string) => {
+    if (typeof sid === 'string' && typeof pwd === 'string') void manager.providePassword(sid, pwd)
   })
-
-  ipcMain.on(IPC.sessionRequestHostKey, (_event, sessionId: string, accept: boolean) => {
-    if (typeof sessionId === 'string' && typeof accept === 'boolean') {
-      void manager.provideHostKey(sessionId, accept)
-    }
+  ipcMain.on(IPC.sessionRequestHostKey, (_e, sid: string, accept: boolean) => {
+    if (typeof sid === 'string' && typeof accept === 'boolean') void manager.provideHostKey(sid, accept)
   })
 
   // --- Буфер обмена ---
-  ipcMain.on(IPC.clipboardRead, (event) => {
-    event.returnValue = clipboard.readText()
-  })
-
-  ipcMain.on(IPC.clipboardWrite, (_event, text: unknown) => {
-    if (typeof text === 'string') clipboard.writeText(text)
-  })
+  ipcMain.on(IPC.clipboardRead, (event) => { event.returnValue = clipboard.readText() })
+  ipcMain.on(IPC.clipboardWrite, (_e, text: unknown) => { if (typeof text === 'string') clipboard.writeText(text) })
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -424,9 +279,11 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(null)
 
     store = new ProfileStore(ProfileStore.defaultPath())
-    manager = new SessionManager(store, broadcast) // Обратите внимание: передаем broadcast вместо send
+    snippetStore = new SnippetStore(SnippetStore.defaultPath())
+    manager = new SessionManager(store, broadcast)
 
     registerIpc()
+    createTray() // [NEW]
 
     if (!isDev) {
       electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -450,9 +307,10 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
   manager?.dispose()
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin' && isQuitting) app.quit()
 })
