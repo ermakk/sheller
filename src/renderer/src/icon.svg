@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="120%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <!-- Скруглённый фон -->
+  <rect width="512" height="512" rx="140" fill="url(#bg)"/>
+  
+  <!-- Иконка SquareTerminal -->
+  <g transform="translate(112, 112) scale(12)" fill="none" stroke="#041311" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m7 11 2-2-2-2" />
+    <path d="M11 13h4" />
+    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+  </g>
+</svg>
