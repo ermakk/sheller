@@ -3859,3 +3859,204 @@ select:focus-visible,
 .file-transfer-form .button-secondary {
   background: rgba(255,255,255,0.05);
 }
+/* =========================================
+   Мониторинг системы
+   ========================================= */
+
+.system-monitor {
+  position: absolute;
+  top: 0; 
+  right: 0; 
+  bottom: 0;
+  width: 380px;
+  background: #0c121b !important; /* Принудительный непрозрачный фон */
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 100; /* Чтобы перекрывать терминал */
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.4);
+}
+
+.system-monitor-body {
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.stats-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+
+.stats-card-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.stats-card-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.stats-card-label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stats-card-value {
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.stats-card-value small {
+  font-size: 10px;
+  color: var(--faint);
+  margin-left: 2px;
+}
+
+.chart-container {
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  /* Важно: фиксируем высоту для графика */
+  height: 260px; 
+}
+
+/* =========================================
+   Автообновление
+   ========================================= */
+
+.update-banner {
+  position: relative;
+  width: min(360px, calc(100vw - 36px));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 13px;
+  border: 1px solid rgba(94, 234, 212, 0.22);
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(56, 189, 248, 0.08), transparent 55%),
+    var(--panel);
+  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px);
+  animation: toast-in 0.22s cubic-bezier(0.2, 0.75, 0.3, 1);
+  pointer-events: auto;
+}
+
+.update-banner.is-error {
+  border-color: rgba(251, 113, 133, 0.32);
+}
+
+.update-banner-icon {
+  flex: 0 0 29px;
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.08);
+}
+
+.update-banner.is-error .update-banner-icon {
+  color: var(--danger);
+  background: rgba(251, 113, 133, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.1);
+}
+
+.update-banner-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 1px;
+}
+
+.update-banner-copy strong {
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.update-banner-copy > span {
+  color: var(--faint);
+  font-size: 9.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.update-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.update-banner-close {
+  flex: 0 0 21px;
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+}
+
+.update-banner-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.update-progress {
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent-blue));
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.35);
+  transition: width 0.2s ease;
+}
+
+.update-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}

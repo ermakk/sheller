@@ -3,16 +3,19 @@
   "version": "0.1.0",
   "description": "Modern SSH client with jump hosts, port forwarding and a built-in terminal",
   "main": "./out/main/index.js",
-  "author": "Sheller",
+  "author": "Ermak",
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "release": "electron-vite build && electron-builder --win --publish always"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
+    "recharts": "^3.10.1",
     "socks": "^2.8.10",
     "ssh2": "^1.16.0",
     "telnet-client": "^2.2.14",
@@ -46,6 +49,21 @@
       "out/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "ermakk",
+      "repo": "sheller"
+    },
     "asar": true,
     "win": {
       "target": [

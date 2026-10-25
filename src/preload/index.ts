@@ -4,7 +4,8 @@ import type {
   ShellerApi, SessionConnectRequest, ProfileDraft, ConnectionProfile,
   ProfileActionResult, SessionStatusEvent, SessionDataEvent,
   TunnelsUpdatedEvent, FileTransferProgressEvent, ZmodemEvent,
-  RemoteFile, Snippet
+  RemoteFile, Snippet,
+  SystemStats, UpdateErrorEvent, UpdateProgressEvent, UpdateStatusEvent, UpdaterApi
 } from '../shared/types'
 
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
@@ -41,6 +42,9 @@ const api: ShellerApi = {
     provideHostKey: (sid, accept) => { ipcRenderer.send(IPC.sessionRequestHostKey, sid, accept); return Promise.resolve() },
     cronList: (sessionId) => ipcRenderer.invoke(IPC.cronList, sessionId),
     cronSave: (sessionId, jobs) => ipcRenderer.invoke(IPC.cronSave, sessionId, jobs),
+    
+    startStatsPolling: (sessionId) => ipcRenderer.send(IPC.sessionGetStats, sessionId),
+    stopStatsPolling: (sessionId) => ipcRenderer.send('session:stop-stats', sessionId),
   },
   events: {
     onData: (fn) => subscribe<SessionDataEvent>(IPC.eventData, fn),
@@ -50,7 +54,8 @@ const api: ShellerApi = {
     onZmodem: (fn) => subscribe<ZmodemEvent>(IPC.eventZmodem, fn),
     onHostKeyVerify: (fn) => subscribe<{ sessionId: string; hostKey: string }>(IPC.eventHostKeyVerify, fn),
     onRequestPassword: (fn) => subscribe<{ sessionId: string }>(IPC.eventRequestPassword, fn),
-    onAttach: (fn) => subscribe<{ sessionId: string; profileId: string }>(IPC.eventAttach, fn)
+    onAttach: (fn) => subscribe<{ sessionId: string; profileId: string }>(IPC.eventAttach, fn),
+    onStats: (fn) => subscribe<{ sessionId: string; stats: SystemStats }>(IPC.eventStats, fn)
   },
   files: {
     pickUpload: (type) => ipcRenderer.invoke(IPC.sessionPickUpload, type),
@@ -70,4 +75,14 @@ const api: ShellerApi = {
   }
 }
 
+const updaterApi: UpdaterApi = {
+  check: () => ipcRenderer.invoke(IPC.updateCheck),
+  download: () => ipcRenderer.invoke(IPC.updateDownload),
+  install: () => ipcRenderer.invoke(IPC.updateInstall),
+  onStatus: (listener) => subscribe<UpdateStatusEvent>(IPC.updateStatus, listener),
+  onProgress: (listener) => subscribe<UpdateProgressEvent>(IPC.updateProgress, listener),
+  onError: (listener) => subscribe<UpdateErrorEvent>(IPC.updateError, listener)
+}
+
 contextBridge.exposeInMainWorld('sheller', api)
+contextBridge.exposeInMainWorld('updater', updaterApi)

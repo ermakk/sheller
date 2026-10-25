@@ -45,7 +45,17 @@ export const IPC = {
   sessionCancelTransfer: 'session:cancel-transfer',
   sessionDeleteRemote: 'session:delete-remote',
   sessionMkdirRemote: 'session:mkdir-remote',
-  sessionRenameRemote: 'session:rename-remote'
+  sessionRenameRemote: 'session:rename-remote',
+  
+  sessionGetStats: 'session:get-stats',
+  eventStats: 'event:session-stats',
+
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  updateInstall: 'update:install',
+  updateStatus: 'update:status',
+  updateProgress: 'update:progress',
+  updateError: 'update:error',
 } as const
 
 export type AuthMethod = 'password' | 'key' | 'agent'
@@ -61,6 +71,15 @@ export interface Snippet {
   name: string
   command: string
   group?: string
+}
+
+
+export interface SystemStats {
+  cpu: number
+  ram: number
+  disk: number
+  temp: number
+  timestamp: number
 }
 
 
@@ -197,6 +216,35 @@ export interface ApiResult {
   error?: string
 }
 
+export type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+
+export interface UpdateStatusEvent {
+  state: UpdateState
+  version?: string
+  releaseDate?: string
+  releaseNotes?: string
+}
+
+export interface UpdateProgressEvent {
+  percent: number
+  transferred: number
+  total: number
+  bytesPerSecond: number
+}
+
+export interface UpdateErrorEvent {
+  message: string
+}
+
+export interface UpdaterApi {
+  check: () => Promise<ApiResult>
+  download: () => Promise<ApiResult>
+  install: () => Promise<void>
+  onStatus: (listener: (event: UpdateStatusEvent) => void) => () => void
+  onProgress: (listener: (event: UpdateProgressEvent) => void) => () => void
+  onError: (listener: (event: UpdateErrorEvent) => void) => () => void
+}
+
 export type ProfileActionResult =
   | { ok: true; profile?: ConnectionProfile }
   | { ok: false; error: string }
@@ -230,6 +278,10 @@ export interface ShellerApi {
     
     cronList: (sessionId: string) => Promise<CronJob[]>
     cronSave: (sessionId: string, jobs: CronJob[]) => Promise<ApiResult>
+
+    
+    startStatsPolling: (sessionId: string) => void
+    stopStatsPolling: (sessionId: string) => void
   }
   events: {
     onData: (listener: (event: SessionDataEvent) => void) => () => void
@@ -240,6 +292,9 @@ export interface ShellerApi {
     onHostKeyVerify: (listener: (event: { sessionId: string; hostKey: string }) => void) => () => void
     onRequestPassword: (listener: (event: { sessionId: string }) => void) => () => void
     onAttach: (listener: (event: { sessionId: string; profileId: string }) => void) => () => void
+
+    
+    onStats: (listener: (event: { sessionId: string; stats: SystemStats }) => void) => () => void
   }
   files: {
     pickUpload: (type?: 'file' | 'directory') => Promise<string[]>

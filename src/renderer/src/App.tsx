@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, FolderUp, Loader2, Settings2, Waypoints, Terminal } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, FolderUp, Loader2, Settings2, Waypoints, Activity } from 'lucide-react'
 import type { ConnectionProfile, ProfileActionResult, ProfileDraft } from '@shared/types'
 import { ConnectionModal } from './components/ConnectionModal'
 import { ConfirmDialog } from './components/ConfirmDialog'
@@ -15,9 +15,11 @@ import { Titlebar } from './components/Titlebar'
 import { Toasts } from './components/Toasts'
 import { TransferList } from './components/TransferList'
 import { TunnelPanel } from './components/TunnelPanel'
+import { UpdateBanner } from './components/UpdateBanner'
 import { Welcome } from './components/Welcome'
 import type { FileTransfer, SessionTab, ToastKind, ToastMessage } from './types'
 import { errorMessage, profileSubtitle, runningTunnels, statusLabel } from './utils'
+import { SystemMonitor } from './components/SystemMonitor'
 
 type EditorState = { profile: ConnectionProfile | null }
 
@@ -36,6 +38,7 @@ export default function App(): JSX.Element {
   const [sftpPanelOpen, setSftpPanelOpen] = useState(false)
   const [snippetsPanelOpen, setSnippetsPanelOpen] = useState(false)
   const [cronModalOpen, setCronModalOpen] = useState(false)
+  const [systemMonitorOpen, setSystemMonitorOpen] = useState(false)
   
   const [splitSessions, setSplitSessions] = useState<Record<string, { session: SessionTab; merged: boolean }>>({})
   const [pwdPrompt, setPwdPrompt] = useState<{ sessionId: string } | null>(null)
@@ -112,7 +115,15 @@ export default function App(): JSX.Element {
     })
   }, [])
 
-  useEffect(() => { setTunnelPanelOpen(false); setSftpPanelOpen(false); setSnippetsPanelOpen(false); setCronModalOpen(false) }, [activeSessionId])
+  useEffect(() => { 
+    setTunnelPanelOpen(false); 
+    setSftpPanelOpen(false); 
+    setSnippetsPanelOpen(false); 
+    setCronModalOpen(false);    
+    if (activeSession && activeSession.status !== 'connected') {
+      setSystemMonitorOpen(false)
+    }
+  }, [activeSessionId])
 
   const dismissTransfer = useCallback((transferId: string) => {
     setTransfers((previous) => previous.filter((item) => item.transferId !== transferId))
@@ -316,11 +327,28 @@ export default function App(): JSX.Element {
             {snippetsPanelOpen && (
               <SnippetsPanel 
                 onClose={() => setSnippetsPanelOpen(false)} 
-                onPaste={pasteCommandToActive} // <--- Изменили проп
+                onPaste={pasteCommandToActive}
+              />
+            )}
+            {activeSession && systemMonitorOpen && (
+              <SystemMonitor 
+                sessionId={activeSession.id} 
+                onClose={() => setSystemMonitorOpen(false)} 
               />
             )}
           </div>
-          {activeSession && <SessionStatusBar session={activeSession} tunnelPanelOpen={tunnelPanelOpen} runningTunnelCount={activeTunnelCount} onToggleTunnels={() => setTunnelPanelOpen((open) => !open)} onEdit={() => editSessionProfile(activeSession.profile)} onUpload={startUpload} onDownload={() => setDownloadDialogSession(activeSession)} onToggleSftp={() => setSftpPanelOpen(open => !open)} />}
+          {activeSession && <SessionStatusBar 
+          session={activeSession} 
+          tunnelPanelOpen={tunnelPanelOpen} 
+          runningTunnelCount={activeTunnelCount} 
+          onToggleTunnels={() => setTunnelPanelOpen((open) => !open)} 
+          onEdit={() => editSessionProfile(activeSession.profile)} 
+          onUpload={startUpload} 
+          onDownload={() => setDownloadDialogSession(activeSession)} 
+          onToggleSftp={() => setSftpPanelOpen(open => !open)} 
+          onToggleMonitor={() => setSystemMonitorOpen(!systemMonitorOpen)}
+          monitorOpen={systemMonitorOpen}
+          />}
         </main>
       </div>
 
@@ -339,13 +367,25 @@ export default function App(): JSX.Element {
       <div className="bottom-area">
         <TransferList transfers={transfers} onDismiss={dismissTransfer} />
         <Toasts toasts={toasts} onDismiss={dismissToast} />
+        <UpdateBanner />
       </div>
       {loading && profiles.length === 0 && <div className="app-loading" aria-hidden="true"><Loader2 size={18} className="spin" /></div>}
     </div>
   )
 }
 
-function SessionStatusBar({ session, tunnelPanelOpen, runningTunnelCount, onToggleTunnels, onEdit, onUpload, onDownload, onToggleSftp }: any): JSX.Element {
+function SessionStatusBar({ 
+  session, 
+  tunnelPanelOpen, 
+  runningTunnelCount, 
+  onToggleTunnels, 
+  onEdit, 
+  onUpload, 
+  onDownload, 
+  onToggleSftp,
+  onToggleMonitor,
+  monitorOpen 
+}: any): JSX.Element {
   const tunnelTotal = session.tunnels.length
   return (
     <footer className={`session-statusbar status-${session.status}`}>
@@ -366,6 +406,17 @@ function SessionStatusBar({ session, tunnelPanelOpen, runningTunnelCount, onTogg
             <button type="button" className={`statusbar-button ${tunnelPanelOpen ? 'is-active' : ''}`} onClick={onToggleTunnels} title="Туннели"><Waypoints size={14} />Туннели<span className="statusbar-badge">{runningTunnelCount}/{tunnelTotal}</span></button>
           </>
         )}
+        
+        <button 
+          type="button" 
+          className={`statusbar-button ${monitorOpen ? 'is-active' : ''}`} 
+          onClick={onToggleMonitor}
+          disabled={session.status !== 'connected' || session.profile.protocol === 'telnet'}
+          title="Мониторинг системы"
+        >
+          <Activity size={14} />
+          Нагрузка
+        </button>
         <button type="button" className="statusbar-button statusbar-icon-button" onClick={onEdit} title="Настройки"><Settings2 size={14} /></button>
       </div>
     </footer>

@@ -95,6 +95,8 @@ export class SessionManager {
   private cancelledTransfers = new Set<string>()
   private readonly MAX_CONCURRENT_FILES = 2
 
+  private statsIntervals = new Map<string, NodeJS.Timeout>()
+
   constructor(private readonly store: ProfileStore, private readonly send: Send) {}
 
   async connect(request: SessionConnectRequest): Promise<ApiResult> {
@@ -406,7 +408,7 @@ export class SessionManager {
     this.sessions.clear()
   }
 
-   // Выполнение команды через отдельный exec-канал
+   // Добавляем таймаут для exec, чтобы повисшие команды не блокировали очередь
   private async execCommand(sessionId: string, command: string): Promise<string> {
     const session = this.sessions.get(sessionId)
     if (!session || !session.client || session.profile.protocol !== 'ssh') {
@@ -416,9 +418,19 @@ export class SessionManager {
       session.client!.exec(command, (err, stream) => {
         if (err) return reject(err)
         let output = ''
+        
+        // Убиваем процесс, если он завис дольше 5 секунд
+        const timeout = setTimeout(() => {
+          stream.close()
+          reject(new Error('Timeout'))
+        }, 5000)
+
         stream.on('data', (data: Buffer) => { output += data.toString('utf8') })
         stream.stderr.on('data', (data: Buffer) => { output += data.toString('utf8') })
-        stream.on('close', () => resolve(output))
+        stream.on('close', () => {
+          clearTimeout(timeout)
+          resolve(output)
+        })
       })
     })
   }
@@ -450,6 +462,65 @@ export class SessionManager {
       return { ok: true }
     } catch (e) {
       return { ok: false, error: describeError(e) }
+    }
+  }
+
+
+ async startStatsPolling(sessionId: string): Promise<void> {
+    if (this.statsIntervals.has(sessionId)) return
+    const session = this.sessions.get(sessionId)
+    if (!session || session.closed || session.status !== 'connected' || session.profile.protocol !== 'ssh') return
+
+    const script = `
+      cpu=$(vmstat 1 2 | tail -1 | awk '{print 100 - $15}')
+      ram=$(free -m | awk 'NR==2{printf "%.1f", $3*100/$2}')
+      disk=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
+      temp_raw=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+      if [ -n "$temp_raw" ]; then temp=$(awk -v t="$temp_raw" 'BEGIN {printf "%.1f", t/1000}'); else temp="0"; fi
+      echo "CPU:$cpu|RAM:$ram|DISK:$disk|TEMP:$temp"
+    `
+
+    let isPolling = false
+    const interval = setInterval(async () => {
+      const s = this.sessions.get(sessionId)
+      if (!s || s.closed || s.status !== 'connected') {
+        this.stopStatsPolling(sessionId)
+        return
+      }
+      
+      if (isPolling) return // Предотвращаем наложение запросов
+      isPolling = true
+
+      try {
+        const output = await this.execCommand(sessionId, script)
+        const match = output.match(/CPU:(.*?)\|RAM:(.*?)\|DISK:(.*?)\|TEMP:(.*)/)
+        if (match) {
+          this.send(IPC.eventStats, {
+            sessionId,
+            stats: {
+              cpu: parseFloat(match[1]) || 0,
+              ram: parseFloat(match[2]) || 0,
+              disk: parseFloat(match[3]) || 0,
+              temp: parseFloat(match[4]) || 0,
+              timestamp: Date.now()
+            }
+          })
+        }
+      } catch {
+        // Таймаут или ошибка сети - просто пропускаем тик
+      } finally {
+        isPolling = false
+      }
+    }, 2000)
+    
+    this.statsIntervals.set(sessionId, interval)
+  }
+
+  stopStatsPolling(sessionId: string): void {
+    const interval = this.statsIntervals.get(sessionId)
+    if (interval) {
+      clearInterval(interval)
+      this.statsIntervals.delete(sessionId)
     }
   }
 
@@ -699,6 +770,7 @@ export class SessionManager {
   private endSession(session: ManagedSession, status: Extract<SessionStatus, 'disconnected' | 'error'>, message?: string) {
     if (session.closed) return
     session.closed = true
+    this.stopStatsPolling(session.id)
     this.sftpCache.delete(session.id)
     try { session.stream?.end() } catch {}
     try { session.telnetConnection?.destroy() } catch {}

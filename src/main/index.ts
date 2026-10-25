@@ -3,7 +3,7 @@ import {
   session as electronSession, shell, Tray, nativeImage,
   type OpenDialogOptions
 } from 'electron'
-import { promises as fs } from 'node:fs'
+import { promises as fs, existsSync  } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '../shared/types'
 import type {
@@ -13,6 +13,7 @@ import type {
 import { ProfileStore } from './profiles'
 import { SnippetStore } from './snippets'
 import { describeError, SessionManager } from './sessions'
+import { setupAutoUpdater, stopAutoUpdater } from './updater'
 
 const isDev = !app.isPackaged
 let mainWindow: BrowserWindow | null = null
@@ -21,6 +22,16 @@ let store: ProfileStore
 let snippetStore: SnippetStore
 let manager: SessionManager
 let isQuitting = false
+
+
+function getIconPath(ext: 'ico' | 'png' = 'ico'): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, `icon.${ext}`)
+  }
+  return join(app.getAppPath(), 'build', `icon.${ext}`)
+}
+
+
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -38,6 +49,7 @@ function createWindow(): void {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: { color: '#0a0e15', symbolColor: '#93a0b8', height: 44 }
     } : {}),
+    icon: getIconPath('ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true
@@ -63,17 +75,24 @@ function createWindow(): void {
 }
 
 function createTray() {
-  // Используем иконку из ресурсов или создаем пустую
-  const iconPath = join(__dirname, '../../build/icon.png')
-  const icon = nativeImage.createFromPath(iconPath)
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 16, height: 16 }))
-  
+  // На Windows используем .ico с готовыми размерами, иначе иконка может выглядеть размытой
+  const preferred: 'ico' | 'png' = process.platform === 'win32' ? 'ico' : 'png'
+  let icon = nativeImage.createFromPath(getIconPath(preferred))
+  if (icon.isEmpty()) icon = nativeImage.createFromPath(getIconPath(preferred === 'ico' ? 'png' : 'ico'))
+  if (icon.isEmpty()) {
+    console.warn(`[tray] Не удалось загрузить иконку: ${getIconPath(preferred)}`)
+    return
+  }
+
+  const trayIcon = preferred === 'png' ? icon.resize({ width: 16, height: 16 }) : icon
+  tray = new Tray(trayIcon)
+
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Показать Sheller', click: () => { mainWindow?.show(); mainWindow?.focus() } },
     { type: 'separator' },
     { label: 'Выход', click: () => { isQuitting = true; app.quit() } }
   ])
-  
+
   tray.setToolTip('Sheller')
   tray.setContextMenu(contextMenu)
   tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus() })
@@ -92,6 +111,14 @@ function profileError(error: unknown): ProfileActionResult {
 
 function registerIpc(): void {
   // --- Профили ---
+  ipcMain.on(IPC.sessionGetStats, (_e, sessionId: string) => {
+    if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
+  })
+
+  // Добавляем обработчик остановки
+  ipcMain.on('session:stop-stats', (_e, sessionId: string) => {
+    if (typeof sessionId === 'string') manager.stopStatsPolling(sessionId)
+  })
   ipcMain.handle(IPC.profilesList, async (): Promise<ConnectionProfile[]> => store.list())
   ipcMain.handle(IPC.profilesSave, async (_event, id: unknown, draft: ProfileDraft): Promise<ProfileActionResult> => {
     try {
@@ -211,6 +238,15 @@ function registerIpc(): void {
     return manager.stopTunnel(sid, tid)
   })
 
+  // --- Состояние ---
+
+   ipcMain.on(IPC.sessionGetStats, (_e, sessionId: string) => {
+    if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
+  })
+
+  // Если нужно остановить опрос при неактивной вкладке
+  // ipcMain.on('session:stop-stats', (_e, sessionId: string) => manager.stopStatsPolling(sessionId))
+
   // --- Файлы (SFTP) ---
   ipcMain.handle(IPC.sessionPickUpload, async (_e, type: unknown) => {
     const isDir = type === 'directory'
@@ -299,15 +335,20 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     createWindow()
+    if (mainWindow) setupAutoUpdater(mainWindow)
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow()
+        if (mainWindow) setupAutoUpdater(mainWindow)
+      }
     })
   })
 }
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopAutoUpdater()
   manager?.dispose()
 })
 
