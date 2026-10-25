@@ -18,7 +18,6 @@ export function Titlebar({ sessionCount }: TitlebarProps): JSX.Element {
           <SquareTerminal size={16} strokeWidth={2.1} />
         </span>
         <span className="brand-name">Sheller</span>
-        <span className="brand-badge">SSH</span>
       </div>
       <div className="titlebar-meta">
         {sessionCount > 0 && (

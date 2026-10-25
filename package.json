@@ -1,6 +1,6 @@
 {
   "name": "sheller",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Modern SSH client with jump hosts, port forwarding and a built-in terminal",
   "main": "./out/main/index.js",
   "author": "Ermak",
