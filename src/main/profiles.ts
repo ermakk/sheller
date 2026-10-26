@@ -33,6 +33,7 @@ interface StoredProfile {
   proxyPort?: number
   proxyUsername?: string
   proxyPassword?: StoredSecret
+  bindAddress?: string
   hostKey?: string
   password?: StoredSecret
   passphrase?: StoredSecret
@@ -158,6 +159,7 @@ export class ProfileStore {
       proxyPort: draft.proxyPort,
       proxyUsername: draft.proxyUsername,
       proxyPassword,
+      bindAddress: draft.bindAddress,
       hostKey: draft.hostKey,
       password,
       passphrase: draft.passphrase ? this.encrypt(draft.passphrase) : undefined,
@@ -203,6 +205,7 @@ export class ProfileStore {
       proxyPort: draft.proxyPort,
       proxyUsername: draft.proxyUsername,
       proxyPassword,
+      bindAddress: draft.bindAddress,
       hostKey: draft.hostKey,
       password,
       passphrase: draft.clearPassphrase ? undefined : draft.passphrase ? this.encrypt(draft.passphrase) : existing.passphrase,
@@ -300,6 +303,7 @@ export class ProfileStore {
       proxyHost: p.proxyHost,
       proxyPort: p.proxyPort,
       proxyUsername: p.proxyUsername,
+      bindAddress: p.bindAddress,
       hostKey: p.hostKey,
       hasPassword: Boolean(p.password),
       hasPassphrase: Boolean(p.passphrase),
@@ -357,6 +361,7 @@ export class ProfileStore {
       proxyPort: input.proxyPort ? Number(input.proxyPort) : undefined,
       proxyUsername: input.proxyUsername?.trim() || undefined,
       proxyPassword: input.proxyPassword || undefined,
+      bindAddress: input.bindAddress?.trim() || undefined,
       hostKey: input.hostKey,
       password: input.password || undefined,
       passphrase: input.passphrase || undefined,

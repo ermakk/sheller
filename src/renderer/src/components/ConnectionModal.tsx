@@ -51,7 +51,8 @@ interface FormState {
   proxyPort: string
   proxyUsername: string
   proxyPassword: string
-  tunnels: TunnelForm[]
+  bindAddress: string
+  tunnels: TunnelForm[]  
 }
 
 function tunnelToForm(tunnel: TunnelConfig): TunnelForm {
@@ -68,7 +69,8 @@ function initialForm(profile: ConnectionProfile | null): FormState {
       name: '', group: '', protocol: 'ssh', host: '', port: '22', username: '',
       authMethod: 'password', privateKeyPath: '', jumpProfileId: '', password: '', passphrase: '',
       clearPassword: false, clearPassphrase: false, askPassword: false, keepaliveInterval: '15000',
-      proxyType: 'none', proxyHost: '', proxyPort: '', proxyUsername: '', proxyPassword: '', tunnels: []
+      proxyType: 'none', proxyHost: '', proxyPort: '', proxyUsername: '', proxyPassword: '', 
+      bindAddress: '', tunnels: []
     }
   }
   return {
@@ -92,6 +94,7 @@ function initialForm(profile: ConnectionProfile | null): FormState {
     proxyPort: profile.proxyPort !== undefined ? String(profile.proxyPort) : '',
     proxyUsername: profile.proxyUsername ?? '',
     proxyPassword: '',
+    bindAddress: profile.bindAddress ?? '',
     tunnels: profile.tunnels.map(tunnelToForm)
   }
 }
@@ -168,6 +171,7 @@ function buildDraft(form: FormState): ProfileDraft {
     proxyPort: hasProxy ? Number(form.proxyPort) || undefined : undefined,
     proxyUsername: hasProxy ? form.proxyUsername.trim() || undefined : undefined,
     proxyPassword: hasProxy ? form.proxyPassword || undefined : undefined,
+    bindAddress: form.bindAddress.trim() || undefined, 
     password: form.askPassword ? undefined : form.password || undefined,
     passphrase: form.passphrase || undefined, clearPassword: form.askPassword ? true : form.clearPassword,
     clearPassphrase: form.clearPassphrase
@@ -377,6 +381,18 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                       </>
                     )}
                   </div>
+                  <label className="field" style={{ marginTop: 12 }}>
+                    <span className="field-label">Привязка к интерфейсу VPN (опционально)</span>
+                    <input
+                      value={form.bindAddress}
+                      onChange={(event) => update('bindAddress', event.target.value)}
+                      placeholder="Например, 10.8.0.2"
+                      spellCheck={false}
+                    />
+                    <span className="field-hint">
+                      Если указан IP, соединение пойдет строго через этот VPN-интерфейс (работает, даже если VPN не является системным по умолчанию).
+                    </span>
+                  </label>
                 </section>
 
                 <section className="form-section">

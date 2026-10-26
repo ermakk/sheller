@@ -171,6 +171,7 @@ export class SessionManager {
           keepaliveInterval: hop.keepaliveInterval || 15000,
           keepaliveCountMax: 4,
           tryKeyboard: hop.authMethod === 'password',
+          ...(hop.bindAddress ? { localAddress: hop.bindAddress } : {}),          
           ...(sock || proxySock ? { sock: sock || proxySock } : { host: hop.host, port: hop.port }),
           hostVerifier: (key, verify) => {
             const hash = createHash('sha256').update(key).digest('base64').replace(/=+$/, '')

@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
 import {
   ClipboardPaste, Copy, Loader2, RefreshCw, SplitSquareHorizontal,
-  Unplug, X, Terminal as TerminalIcon, CalendarClock
+  Unplug, X, Terminal as TerminalIcon, CalendarClock, Maximize2, Minimize2
 } from 'lucide-react'
 import type { SessionTab } from '../types'
 import { errorMessage } from '../utils'
@@ -33,6 +33,24 @@ export function TerminalPane({
   const [hasSelection, setHasSelection] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    return window.sheller.window.onFullscreenChange((fs) => {
+      setIsFullscreen(fs)
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      window.sheller.window.setFullscreen(false)
+    }
+  }, [])
+
+  const toggleFullscreen = (value: boolean) => {
+    setIsFullscreen(value)
+    window.sheller.window.setFullscreen(value)
+  }
 
   const copySelection = useCallback((clear = true): boolean => {
     const terminal = terminalRef.current
@@ -52,6 +70,14 @@ export function TerminalPane({
     terminal.focus()
     terminal.paste(text)
   }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try { fitRef.current?.fit() } catch { undefined }
+      if (autoFocus) terminalRef.current?.focus()
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [isFullscreen, autoFocus])
 
   useEffect(() => {
     activeRef.current = active
@@ -158,9 +184,19 @@ export function TerminalPane({
   const message = localError ?? session.message ?? (session.status === 'disconnected' ? 'Соединение закрыто' : 'Не удалось подключиться')
   const connecting = session.status === 'connecting' && !localError
 
+  const renderTools = () => (
+    <>
+      {onOpenSnippets && <button type="button" className="terminal-tool" onClick={onOpenSnippets} title="Сниппеты"><TerminalIcon size={14} /></button>}
+      {onOpenCron && <button type="button" className="terminal-tool" onClick={onOpenCron} title="Cron планировщик"><CalendarClock size={14} /></button>}
+      {onSplit && <button type="button" className="terminal-tool" onClick={onSplit} title="Разделить экран"><SplitSquareHorizontal size={14} /></button>}
+      <button type="button" className="terminal-tool" disabled={!hasSelection} onMouseDown={(event) => event.preventDefault()} onClick={() => copySelection(true)} title="Копировать"><Copy size={14} /></button>
+      <button type="button" className="terminal-tool" disabled={session.status !== 'connected'} onMouseDown={(event) => event.preventDefault()} onClick={pasteClipboard} title="Вставить"><ClipboardPaste size={14} /></button>
+    </>
+  )
+
   return (
     <section
-      className={`terminal-pane ${active ? 'is-active' : ''} ${dragOver ? 'is-drop-target' : ''}`}
+      className={`terminal-pane ${active ? 'is-active' : ''} ${dragOver ? 'is-drop-target' : ''} ${isFullscreen ? 'is-fullscreen' : ''}`}
       aria-hidden={!active}
       aria-label={`Терминал ${session.profile.name}`}
       onDragOver={(event) => {
@@ -171,21 +207,29 @@ export function TerminalPane({
       onDrop={dropHandler}
     >
       <div ref={hostRef} className="terminal-host" />
+
       {dragOver && (
         <div className="terminal-drop-overlay">
           <svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
           <span>Отпустите для загрузки на сервер</span>
         </div>
       )}
+
       {!connecting && (
-        <div className="terminal-tools">
-          {onOpenSnippets && <button type="button" className="terminal-tool" onClick={onOpenSnippets} title="Сниппеты"><TerminalIcon size={14} /></button>}
-          {onOpenCron && <button type="button" className="terminal-tool" onClick={onOpenCron} title="Cron планировщик"><CalendarClock size={14} /></button>}
-          {onSplit && <button type="button" className="terminal-tool" onClick={onSplit} title="Разделить экран"><SplitSquareHorizontal size={14} /></button>}
-          <button type="button" className="terminal-tool" disabled={!hasSelection} onMouseDown={(event) => event.preventDefault()} onClick={() => copySelection(true)} title="Копировать"><Copy size={14} /></button>
-          <button type="button" className="terminal-tool" disabled={session.status !== 'connected'} onMouseDown={(event) => event.preventDefault()} onClick={pasteClipboard} title="Вставить"><ClipboardPaste size={14} /></button>
+        <div className={`terminal-tools ${isFullscreen ? 'is-floating-fullscreen' : ''}`}>
+          {isFullscreen && (
+            <div className="terminal-floating-title">
+              <span>{session.profile.name}</span>
+              <span className="terminal-floating-host">{session.profile.username}@{session.profile.host}</span>
+            </div>
+          )}
+          {renderTools()}
+          <button type="button" className="terminal-tool" onClick={() => toggleFullscreen(!isFullscreen)} title={isFullscreen ? "Выйти из полноэкранного режима" : "На весь экран"}>
+            {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
         </div>
       )}
+
       {connecting && (
         <div className="terminal-connecting">
           <span className="terminal-connecting-glow" /><span className="terminal-spinner"><Loader2 size={26} className="spin" /></span>

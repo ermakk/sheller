@@ -4060,3 +4060,69 @@ select:focus-visible,
   font-family: var(--font-mono);
   font-size: 8.5px;
 }
+/* =========================================
+   Полноэкранный режим (Floating Toolbar)
+   ========================================= */
+
+.terminal-pane.is-fullscreen {
+  position: fixed;
+  z-index: 9999;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #090d14;
+}
+
+/* Убираем пустую полосу сверху, оставляем только небольшие отступы по краям */
+.terminal-pane.is-fullscreen .terminal-host {
+  position: absolute;
+  inset: 0;
+  padding: 12px; /* Было 50px сверху, стало 12px со всех сторон */
+}
+
+/* Плавающая панель инструментов */
+.terminal-tools.is-floating-fullscreen {
+  position: absolute;
+  z-index: 10000;
+  top: 12px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(12, 18, 27, 0.85); /* Полупрозрачный темный фон */
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+  opacity: 1; /* В полном экране панель всегда видима */
+  transform: translateY(0);
+  transition: opacity 0.2s ease;
+}
+
+/* Скрываем панель в полноэкранном режиме, если мышь не наведена на терминал (опционально) */
+.terminal-pane.is-fullscreen:hover .terminal-tools.is-floating-fullscreen {
+  opacity: 1;
+}
+
+/* Красивая плашка с именем хоста внутри панели */
+.terminal-floating-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-right: 12px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.terminal-floating-title span:first-child {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.terminal-floating-host {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--faint);
+}

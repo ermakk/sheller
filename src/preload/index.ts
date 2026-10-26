@@ -72,7 +72,15 @@ const api: ShellerApi = {
   clipboard: {
     readText: () => ipcRenderer.sendSync(IPC.clipboardRead),
     writeText: (text) => ipcRenderer.send(IPC.clipboardWrite, text)
-  }
+  },
+  window: {
+    setFullscreen: (value) => ipcRenderer.send('window:set-fullscreen', value),
+    onFullscreenChange: (listener) => {
+      const handler = (_e: any, isFullscreen: boolean) => listener(isFullscreen)
+      ipcRenderer.on('window:fullscreen-changed', handler)
+      return () => ipcRenderer.removeListener('window:fullscreen-changed', handler)
+    }
+  },
 }
 
 const updaterApi: UpdaterApi = {

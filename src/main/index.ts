@@ -57,6 +57,8 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window:fullscreen-changed', true))
+  mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window:fullscreen-changed', false))
   
   // [NEW] Обработка закрытия в трей
   mainWindow.on('close', (event) => {
@@ -114,7 +116,12 @@ function registerIpc(): void {
   ipcMain.on(IPC.sessionGetStats, (_e, sessionId: string) => {
     if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
   })
-
+  ipcMain.on('window:set-fullscreen', (event, value: boolean) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) {
+      win.setFullScreen(value)
+    }
+  })
   // Добавляем обработчик остановки
   ipcMain.on('session:stop-stats', (_e, sessionId: string) => {
     if (typeof sessionId === 'string') manager.stopStatsPolling(sessionId)
@@ -254,9 +261,17 @@ function registerIpc(): void {
     const r = mainWindow ? await dialog.showOpenDialog(mainWindow, opts) : await dialog.showOpenDialog(opts)
     return r.canceled ? [] : r.filePaths
   })
-  ipcMain.handle(IPC.sessionPickDownload, async () => {
-    const opts = { properties: ['openDirectory', 'createDirectory'] as const }
-    const r = mainWindow ? await dialog.showOpenDialog(mainWindow, opts) : await dialog.showOpenDialog(opts)
+ipcMain.handle(IPC.sessionPickDownload, async (): Promise<string | null> => {
+    // 1. Убираем as const и явно указываем тип OpenDialogOptions
+    const opts: OpenDialogOptions = { 
+      title: 'Выберите папку для сохранения',
+      properties: ['openDirectory', 'createDirectory'] 
+    }
+    
+    const r = mainWindow 
+      ? await dialog.showOpenDialog(mainWindow, opts) 
+      : await dialog.showOpenDialog(opts)
+      
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
   ipcMain.handle(IPC.sessionListRemote, async (_e, sid, path) => {
@@ -348,7 +363,6 @@ if (!app.requestSingleInstanceLock()) {
 
 app.on('before-quit', () => {
   isQuitting = true
-  stopAutoUpdater()
   manager?.dispose()
 })
 

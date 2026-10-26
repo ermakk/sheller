@@ -146,12 +146,14 @@ export interface ConnectionProfile {
   proxyPort?: number
   proxyUsername?: string
   proxyPassword?: string
+  bindAddress?: string 
   hostKey?: string
   hasPassword: boolean
   hasPassphrase: boolean
   createdAt: string
   updatedAt: string
   lastUsedAt?: string
+  
 }
 
 export interface ProfileDraft {
@@ -172,6 +174,7 @@ export interface ProfileDraft {
   proxyPort?: number
   proxyUsername?: string
   proxyPassword?: string
+  bindAddress?: string
   hostKey?: string
   password?: string
   passphrase?: string
@@ -311,6 +314,11 @@ export interface ShellerApi {
   clipboard: {
     readText: () => string
     writeText: (text: string) => void
+  }
+  
+  window: {
+    setFullscreen: (value: boolean) => void
+    onFullscreenChange: (listener: (isFullscreen: boolean) => void) => () => void
   }
 }
 
