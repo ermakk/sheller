@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { SquareTerminal, CornerDownLeft } from 'lucide-react'
 import type { ConnectionProfile } from '@shared/types'
+import { ConfirmDialog } from './components/ConfirmDialog'
+import { PasswordPrompt } from './components/PasswordPrompt'
 import { TerminalPane } from './components/TerminalPane'
 import type { SessionTab } from './types'
 
@@ -13,6 +15,9 @@ export default function DetachedApp({ sessionId, profileId }: DetachedAppProps):
   const [profile, setProfile] = useState<ConnectionProfile | null>(null)
   const [status, setStatus] = useState<SessionTab['status']>('connected')
   const [message, setMessage] = useState<string | undefined>()
+  const [connectionKey, setConnectionKey] = useState(0)
+  const [pwdPrompt, setPwdPrompt] = useState(false)
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<{ hostKey: string; previousHostKey?: string } | null>(null)
 
   useEffect(() => {
     void window.sheller.profiles.list().then((list) => {
@@ -21,18 +26,30 @@ export default function DetachedApp({ sessionId, profileId }: DetachedAppProps):
   }, [profileId])
 
   useEffect(() => {
-    const unsub = window.sheller.events.onStatus((event) => {
+    const unsubStatus = window.sheller.events.onStatus((event) => {
       if (event.sessionId === sessionId) {
         setStatus(event.status)
         setMessage(event.message)
       }
     })
-    return () => unsub()
+    const unsubPassword = window.sheller.events.onRequestPassword((event) => {
+      if (event.sessionId === sessionId) setPwdPrompt(true)
+    })
+    const unsubHostKey = window.sheller.events.onHostKeyVerify((event) => {
+      if (event.sessionId === sessionId) {
+        setHostKeyPrompt({ hostKey: event.hostKey, previousHostKey: event.previousHostKey })
+      }
+    })
+    return () => { unsubStatus(); unsubPassword(); unsubHostKey() }
   }, [sessionId])
 
   if (!profile) return null
 
   const session: SessionTab = { id: sessionId, profile, status, message, tunnels: [] }
+  const close = (): void => {
+    void window.sheller.sessions.disconnect(sessionId)
+    window.close()
+  }
 
   return (
     <div className="detached-shell">
@@ -58,15 +75,45 @@ export default function DetachedApp({ sessionId, profileId }: DetachedAppProps):
       
       <div className="detached-content">
         <TerminalPane
+          key={connectionKey}
           session={session}
           active={true}
           autoConnect={true}
           autoFocus={true}
-          onReconnect={() => {}}
-          onClose={() => window.close()}
-          onFilesDropped={() => {}}
+          onReconnect={() => { setStatus('connecting'); setConnectionKey((value) => value + 1) }}
+          onClose={close}
+          onFilesDropped={(paths) => {
+            for (const localPath of paths) void window.sheller.files.upload(sessionId, localPath, './', crypto.randomUUID())
+          }}
         />
       </div>
+      {pwdPrompt && (
+        <PasswordPrompt
+          onConfirm={(password) => {
+            window.sheller.sessions.providePassword(sessionId, password)
+            setPwdPrompt(false)
+          }}
+          onCancel={() => {
+            void window.sheller.sessions.disconnect(sessionId)
+            setPwdPrompt(false)
+          }}
+        />
+      )}
+      {hostKeyPrompt && (
+        <ConfirmDialog
+          title={hostKeyPrompt.previousHostKey ? 'Ключ сервера изменился!' : 'Неизвестный сервер'}
+          description={`Отпечаток ключа: ${hostKeyPrompt.hostKey}.${hostKeyPrompt.previousHostKey ? ' Ранее сервер использовал другой ключ — это может быть подмена сервера.' : ''} Вы доверяете этому серверу?`}
+          confirmLabel="Доверять"
+          onConfirm={() => {
+            window.sheller.sessions.provideHostKey(sessionId, true)
+            setHostKeyPrompt(null)
+          }}
+          onCancel={() => {
+            window.sheller.sessions.provideHostKey(sessionId, false)
+            setHostKeyPrompt(null)
+          }}
+        />
+      )}
     </div>
   )
 }

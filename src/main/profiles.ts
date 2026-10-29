@@ -58,7 +58,9 @@ const PROTOCOLS: Protocol[] = ['ssh', 'telnet']
 export class ProfileStore {
   private data: StoreFile = { version: 1, profiles: [] }
   private loaded = false
+  private initPromise: Promise<void> | null = null
   private writeQueue: Promise<void> = Promise.resolve()
+  private warnedPlaintext = false
 
   constructor(private readonly filePath: string) {}
 
@@ -68,7 +70,11 @@ export class ProfileStore {
 
   async init(): Promise<void> {
     if (this.loaded) return
-    this.loaded = true
+    if (!this.initPromise) this.initPromise = this.load()
+    await this.initPromise
+  }
+
+  private async load(): Promise<void> {
     try {
       const raw = await fs.readFile(this.filePath, 'utf8')
       const parsed = JSON.parse(raw) as Partial<StoreFile>
@@ -83,6 +89,8 @@ export class ProfileStore {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') console.error('Failed to read profiles:', error)
       this.data = { version: 1, profiles: [] }
+    } finally {
+      this.loaded = true
     }
   }
 
@@ -136,7 +144,7 @@ export class ProfileStore {
     const password = draft.password ? this.encrypt(draft.password) : undefined
     const proxyPassword = draft.proxyPassword ? this.encrypt(draft.proxyPassword) : undefined
     
-    if (draft.authMethod === 'password' && !password && !draft.askPassword) {
+    if (draft.protocol === 'ssh' && draft.authMethod === 'password' && !password && !draft.askPassword) {
       throw new Error('Укажите пароль или включите запрос при подключении')
     }
     
@@ -182,7 +190,7 @@ export class ProfileStore {
     const password = draft.clearPassword ? undefined : draft.password ? this.encrypt(draft.password) : existing.password
     const proxyPassword = draft.proxyPassword ? this.encrypt(draft.proxyPassword) : existing.proxyPassword
     
-    if (draft.authMethod === 'password' && !password && !draft.askPassword) {
+    if (draft.protocol === 'ssh' && draft.authMethod === 'password' && !password && !draft.askPassword) {
       throw new Error('Введите новый пароль или включите запрос при подключении')
     }
 
@@ -206,7 +214,7 @@ export class ProfileStore {
       proxyUsername: draft.proxyUsername,
       proxyPassword,
       bindAddress: draft.bindAddress,
-      hostKey: draft.hostKey,
+      hostKey: draft.hostKey ?? existing.hostKey,
       password,
       passphrase: draft.clearPassphrase ? undefined : draft.passphrase ? this.encrypt(draft.passphrase) : existing.passphrase,
       createdAt: existing.createdAt,
@@ -259,20 +267,93 @@ export class ProfileStore {
 
   async importProfiles(json: string): Promise<void> {
     await this.init()
+    let parsed: unknown
     try {
-      const parsed = JSON.parse(json)
-      if (!parsed || !Array.isArray(parsed.profiles)) throw new Error('Неверный формат')
-      const newProfiles = parsed.profiles.map((p: any) => ({
-        ...p,
-        id: randomUUID(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        lastUsedAt: undefined
-      }))
-      this.data.profiles.push(...newProfiles)
+      parsed = JSON.parse(json)
+    } catch {
+      throw new Error('Неверный формат файла профилей')
+    }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { profiles?: unknown }).profiles)) {
+      throw new Error('Неверный формат файла профилей')
+    }
+    const rawProfiles = (parsed as { profiles: unknown[] }).profiles
+    const idMap = new Map<string, string>()
+    for (const raw of rawProfiles) {
+      if (!raw || typeof raw !== 'object') throw new Error('Неверный формат профиля')
+      const oldId = (raw as { id?: unknown }).id
+      if (typeof oldId === 'string' && oldId && !idMap.has(oldId)) idMap.set(oldId, randomUUID())
+    }
+
+    const now = new Date().toISOString()
+    const usedIds = new Set<string>()
+    const imported: StoredProfile[] = rawProfiles.map((raw) => {
+      const data = raw as Record<string, unknown>
+      const oldId = typeof data.id === 'string' ? data.id : ''
+      let id = idMap.get(oldId) ?? randomUUID()
+      if (usedIds.has(id)) id = randomUUID()
+      usedIds.add(id)
+
+      const draft = this.normalizeDraft({
+        name: data.name,
+        group: data.group,
+        protocol: data.protocol,
+        host: data.host,
+        port: data.port,
+        username: data.username,
+        authMethod: data.authMethod,
+        privateKeyPath: data.privateKeyPath,
+        jumpProfileId: undefined,
+        tunnels: data.tunnels,
+        askPassword: data.askPassword,
+        keepaliveInterval: data.keepaliveInterval,
+        proxyType: data.proxyType,
+        proxyHost: data.proxyHost,
+        proxyPort: data.proxyPort,
+        proxyUsername: data.proxyUsername,
+        bindAddress: data.bindAddress,
+        hostKey: data.hostKey
+      } as unknown as ProfileDraft, id)
+
+      let jumpProfileId: string | undefined
+      const oldJumpId = typeof data.jumpProfileId === 'string' ? data.jumpProfileId : ''
+      if (oldJumpId) {
+        jumpProfileId = idMap.get(oldJumpId) ?? (this.find(oldJumpId) ? oldJumpId : undefined)
+        if (!jumpProfileId) throw new Error(`Jump-хост «${oldJumpId}» не найден`)
+      }
+
+      return {
+        id,
+        name: draft.name,
+        group: draft.group,
+        protocol: draft.protocol,
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        authMethod: draft.authMethod,
+        privateKeyPath: draft.privateKeyPath,
+        jumpProfileId,
+        tunnels: draft.tunnels,
+        askPassword: draft.askPassword,
+        keepaliveInterval: draft.keepaliveInterval,
+        proxyType: draft.proxyType,
+        proxyHost: draft.proxyHost,
+        proxyPort: draft.proxyPort,
+        proxyUsername: draft.proxyUsername,
+        bindAddress: draft.bindAddress,
+        hostKey: draft.hostKey,
+        createdAt: now,
+        updatedAt: now
+      }
+    })
+
+    const previous = this.data.profiles
+    this.data.profiles = [...previous, ...imported]
+    try {
+      for (const profile of imported) this.assertJumpChain(profile.id, profile.jumpProfileId)
       await this.persist()
-    } catch (e) {
-      throw new Error('Не удалось импортировать профили')
+    } catch (error) {
+      this.data.profiles = previous
+      throw error
     }
   }
 
@@ -327,6 +408,10 @@ export class ProfileStore {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Неверный порт')
 
     const authMethod = AUTH_METHODS.includes(input.authMethod) ? input.authMethod : 'password'
+    const privateKeyPath = input.privateKeyPath?.trim() || undefined
+    if (protocol === 'ssh' && authMethod === 'key' && !privateKeyPath) {
+      throw new Error('Укажите путь к приватному ключу')
+    }
     let jumpProfileId = input.jumpProfileId?.trim() || undefined
     if (jumpProfileId === id) jumpProfileId = undefined
     if (jumpProfileId && !this.find(jumpProfileId)) throw new Error('Jump-хост не найден')
@@ -342,6 +427,15 @@ export class ProfileStore {
       : []
 
     const proxyType = PROXY_TYPES.includes(input.proxyType) ? input.proxyType : 'none'
+    const proxyHost = input.proxyHost?.trim() || undefined
+    let proxyPort: number | undefined
+    if (proxyType !== 'none') {
+      if (!proxyHost) throw new Error('Укажите хост прокси')
+      proxyPort = Number(input.proxyPort)
+      if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+        throw new Error('Неверный порт прокси')
+      }
+    }
 
     return {
       name,
@@ -351,18 +445,18 @@ export class ProfileStore {
       port,
       username,
       authMethod,
-      privateKeyPath: input.privateKeyPath?.trim() || undefined,
+      privateKeyPath,
       jumpProfileId,
       tunnels,
       askPassword: Boolean(input.askPassword),
       keepaliveInterval: Number(input.keepaliveInterval) || 15000,
       proxyType,
-      proxyHost: input.proxyHost?.trim() || undefined,
-      proxyPort: input.proxyPort ? Number(input.proxyPort) : undefined,
+      proxyHost,
+      proxyPort,
       proxyUsername: input.proxyUsername?.trim() || undefined,
       proxyPassword: input.proxyPassword || undefined,
       bindAddress: input.bindAddress?.trim() || undefined,
-      hostKey: input.hostKey,
+      hostKey: typeof input.hostKey === 'string' ? input.hostKey : undefined,
       password: input.password || undefined,
       passphrase: input.passphrase || undefined,
       clearPassword: Boolean(input.clearPassword),
@@ -372,14 +466,27 @@ export class ProfileStore {
 
   private normalizeTunnel(tunnel: TunnelConfig): TunnelConfig {
     if (!tunnel || !TUNNEL_TYPES.includes(tunnel.type)) throw new Error('Неверный тип туннеля')
+    const bindPort = Number(tunnel.bindPort)
+    if (!Number.isInteger(bindPort) || bindPort < 0 || bindPort > 65535) {
+      throw new Error('Неверный порт туннеля')
+    }
+    const destHost = tunnel.destHost?.trim()
+    let destPort: number | undefined
+    if (tunnel.type !== 'dynamic') {
+      if (!destHost) throw new Error('Укажите хост назначения туннеля')
+      destPort = Number(tunnel.destPort)
+      if (!Number.isInteger(destPort) || destPort < 1 || destPort > 65535) {
+        throw new Error('Неверный порт назначения туннеля')
+      }
+    }
     return {
       id: typeof tunnel.id === 'string' && tunnel.id ? tunnel.id : randomUUID(),
       name: String(tunnel.name ?? '').trim() || 'Туннель',
       type: tunnel.type,
       bindHost: String(tunnel.bindHost || '127.0.0.1').trim(),
-      bindPort: Number(tunnel.bindPort) || 0,
-      destHost: tunnel.destHost?.trim(),
-      destPort: tunnel.destPort ? Number(tunnel.destPort) : undefined,
+      bindPort,
+      destHost,
+      destPort,
       autoStart: Boolean(tunnel.autoStart)
     }
   }
@@ -403,6 +510,10 @@ export class ProfileStore {
   private encrypt(value: string): StoredSecret {
     if (safeStorage.isEncryptionAvailable()) {
       return { scheme: 'safe', data: safeStorage.encryptString(value).toString('base64') }
+    }
+    if (!this.warnedPlaintext) {
+      this.warnedPlaintext = true
+      console.warn('Safe storage is unavailable; saved passwords will not be encrypted by the OS.')
     }
     return { scheme: 'plain', data: Buffer.from(value, 'utf8').toString('base64') }
   }

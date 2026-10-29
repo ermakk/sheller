@@ -171,7 +171,7 @@ function buildDraft(form: FormState): ProfileDraft {
     proxyPort: hasProxy ? Number(form.proxyPort) || undefined : undefined,
     proxyUsername: hasProxy ? form.proxyUsername.trim() || undefined : undefined,
     proxyPassword: hasProxy ? form.proxyPassword || undefined : undefined,
-    bindAddress: form.bindAddress.trim() || undefined, 
+    bindAddress: form.bindAddress.trim() || undefined,
     password: form.askPassword ? undefined : form.password || undefined,
     passphrase: form.passphrase || undefined, clearPassword: form.askPassword ? true : form.clearPassword,
     clearPassphrase: form.clearPassphrase
@@ -378,6 +378,8 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                       <>
                         <label className="field"><span className="field-label">Хост прокси</span><input value={form.proxyHost} onChange={(event) => update('proxyHost', event.target.value)} placeholder="127.0.0.1" /></label>
                         <label className="field"><span className="field-label">Порт прокси</span><input inputMode="numeric" value={form.proxyPort} onChange={(event) => update('proxyPort', event.target.value.replace(/[^\d]/g, ''))} placeholder="1080" /></label>
+                        <label className="field"><span className="field-label">Пользователь прокси</span><input value={form.proxyUsername} onChange={(event) => update('proxyUsername', event.target.value)} placeholder="Опционально" autoComplete="off" spellCheck={false} /></label>
+                        <label className="field"><span className="field-label">Пароль прокси</span><input type="password" value={form.proxyPassword} onChange={(event) => update('proxyPassword', event.target.value)} placeholder="Сохранённый — оставьте пустым" autoComplete="new-password" spellCheck={false} /></label>
                       </>
                     )}
                   </div>
@@ -426,6 +428,14 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                         <button type="button" className="modal-icon-button tunnel-remove" onClick={() => removeTunnel(tunnel.id)}><Trash2 size={15} /></button>
                       </div>
                       <div className="form-grid tunnel-form-grid">
+                        <label className="field"><span className="field-label">Название туннеля</span>
+                          <input value={tunnel.name} onChange={(e) => updateTunnel(tunnel.id, { name: e.target.value })} placeholder="Например, Web" spellCheck={false} />
+                        </label>
+                        <label className="switch-field tunnel-autostart">
+                          <input type="checkbox" checked={tunnel.autoStart} onChange={(e) => updateTunnel(tunnel.id, { autoStart: e.target.checked })} />
+                          <span className="switch-track"><span className="switch-thumb" /></span>
+                          <span className="switch-label">Запускать автоматически</span>
+                        </label>
                         <label className="field"><span className="field-label">{tunnel.type === 'remote' ? 'Адрес на сервере' : 'Локальный адрес'}</span>
                           <div className="inline-fields">
                             <input value={tunnel.bindHost} onChange={(e) => updateTunnel(tunnel.id, { bindHost: e.target.value })} placeholder="127.0.0.1" />

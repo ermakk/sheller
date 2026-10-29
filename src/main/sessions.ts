@@ -1,11 +1,12 @@
-import { Client, type ClientChannel, type ConnectConfig, type SFTPWrapper, type TcpConnectionDetails, type Stats, type FileEntry } from 'ssh2'
-import { readFile, promises as fs } from 'node:fs'
+import { Client, createAgent, type ClientChannel, type ConnectConfig, type SFTPWrapper, type TcpConnectionDetails, type Stats, type FileEntry } from 'ssh2'
+import { createReadStream, createWriteStream, promises as fs } from 'node:fs'
 import { createServer, connect as createSocket, type Server, type Socket } from 'node:net'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, posix } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { createHash } from 'node:crypto'
-import type { Duplex } from 'node:stream'
+import { Transform, type Duplex } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { SocksClient } from 'socks'
 import * as http from 'node:http'
 import * as net from 'node:net'
@@ -35,6 +36,7 @@ import type {
 import type { ProfileStore, ResolvedProfile } from './profiles'
 
 type Send = (channel: string, payload: unknown) => void
+type TransferEmitter = (bytes: number, total: number, done: boolean, error?: string) => void
 
 interface ManagedSession {
   id: string
@@ -54,7 +56,9 @@ interface ManagedSession {
   zmodem?: any
   zmodemState: 'idle' | 'receiving' | 'sending'
   hostKeyResolver?: (accept: boolean) => void
+  hostKeyRejector?: (error: Error) => void
   passwordResolver?: (password: string) => void
+  passwordRejector?: (error: Error) => void
 }
 
 interface TunnelState {
@@ -93,6 +97,7 @@ export class SessionManager {
   private transferQueue: Array<() => Promise<void>> = []
   private activeTransfersCount = 0
   private cancelledTransfers = new Set<string>()
+  private cronRaw = new Map<string, string[]>()
   private readonly MAX_CONCURRENT_FILES = 2
 
   private statsIntervals = new Map<string, NodeJS.Timeout>()
@@ -103,6 +108,7 @@ export class SessionManager {
     const sessionId = String(request?.sessionId ?? '')
     const profileId = String(request?.profileId ?? '')
     if (!sessionId || !profileId) return { ok: false, error: 'Некорректный запрос' }
+    if (this.cancelledSessions.delete(sessionId)) return { ok: false, error: 'Соединение отменено' }
 
     // Если сессия уже существует (при возврате из отдельного окна)
     const existing = this.sessions.get(sessionId)
@@ -129,6 +135,7 @@ export class SessionManager {
       profiles.find((p) => p.id === profileId)
     )
     if (!publicProfile) return { ok: false, error: 'Профиль не найден' }
+    if (this.cancelledSessions.delete(sessionId)) return { ok: false, error: 'Соединение отменено' }
 
     const session: ManagedSession = {
       id: sessionId,
@@ -139,7 +146,7 @@ export class SessionManager {
       closed: false,
       clients: [],
       decoder: new StringDecoder('utf8'),
-      tunnels: new Map(),
+      tunnels: createTunnelStates(publicProfile),
       zmodemState: 'idle'
     }
     this.sessions.set(sessionId, session)
@@ -171,14 +178,15 @@ export class SessionManager {
           keepaliveInterval: hop.keepaliveInterval || 15000,
           keepaliveCountMax: 4,
           tryKeyboard: hop.authMethod === 'password',
-          ...(hop.bindAddress ? { localAddress: hop.bindAddress } : {}),          
+          ...(hop.bindAddress ? { localAddress: hop.bindAddress } : {}),
           ...(sock || proxySock ? { sock: sock || proxySock } : { host: hop.host, port: hop.port }),
-          hostVerifier: (key, verify) => {
+          hostVerifier: (key: Buffer, verify: (valid: boolean) => void) => {
             const hash = createHash('sha256').update(key).digest('base64').replace(/=+$/, '')
             const fingerprint = `SHA256:${hash}`
             if (hop.hostKey === fingerprint) { verify(true); return }
             session.hostKeyResolver = (accept) => {
               session.hostKeyResolver = undefined
+              session.hostKeyRejector = undefined
               if (accept) {
                 const draft: ProfileDraft = {
                   name: hop.name, group: hop.group, protocol: hop.protocol, host: hop.host, port: hop.port,
@@ -186,7 +194,7 @@ export class SessionManager {
                   jumpProfileId: hop.jumpProfileId, tunnels: hop.tunnels, askPassword: hop.askPassword,
                   keepaliveInterval: hop.keepaliveInterval, proxyType: hop.proxyType, proxyHost: hop.proxyHost,
                   proxyPort: hop.proxyPort, proxyUsername: hop.proxyUsername, proxyPassword: hop.proxyPassword,
-                  hostKey: fingerprint
+                  bindAddress: hop.bindAddress, hostKey: fingerprint
                 }
                 void this.store.update(hop.id, draft).catch((err) => console.error('Failed to save host key:', err))
                 verify(true)
@@ -194,23 +202,43 @@ export class SessionManager {
                 verify(false)
               }
             }
-            this.send(IPC.eventHostKeyVerify, { sessionId, hostKey: fingerprint })
+            session.hostKeyRejector = () => {
+              session.hostKeyResolver = undefined
+              session.hostKeyRejector = undefined
+              verify(false)
+            }
+            this.send(IPC.eventHostKeyVerify, {
+              sessionId,
+              hostKey: fingerprint,
+              previousHostKey: hop.hostKey
+            })
           }
         }
 
-        if (hop.authMethod === 'password') {
-          let pwd = hop.password || request.password
-          if (!pwd) {
-            pwd = await new Promise<string>((resolve) => {
-              session.passwordResolver = resolve
-              this.send(IPC.eventRequestPassword, { sessionId })
-            })
-          }
-          connectConfig.password = pwd
-        } else if (hop.authMethod === 'key' && hop.privateKeyPath) {
-          connectConfig.privateKey = await readFile(hop.privateKeyPath)
-          if (hop.passphrase) connectConfig.passphrase = hop.passphrase
+        let authPassword = hop.password || request.password
+        const ensurePassword = async (): Promise<string> => {
+          if (authPassword) return authPassword
+          authPassword = await this.requestPassword(session)
+          return authPassword
         }
+
+        if (hop.authMethod === 'password') {
+          client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
+            void ensurePassword()
+              .then((password) => finish(prompts.map(() => password)))
+              .catch(() => finish([]))
+          })
+          connectConfig.password = await ensurePassword()
+        } else if (hop.authMethod === 'key' && hop.privateKeyPath) {
+          connectConfig.privateKey = await fs.readFile(hop.privateKeyPath)
+          if (hop.passphrase) connectConfig.passphrase = hop.passphrase
+        } else if (hop.authMethod === 'agent') {
+          const agentPath = resolveAgentPath()
+          if (!agentPath) throw new Error('SSH-агент не найден. Запустите ssh-agent или задайте SSH_AUTH_SOCK.')
+          connectConfig.agent = createAgent(agentPath)
+        }
+
+        if (session.closed) throw new Error(session.lastError ?? 'Соединение отменено')
 
         await new Promise<void>((resolve, reject) => {
           let settled = false
@@ -316,17 +344,46 @@ export class SessionManager {
         on_detect: (detection: any) => {
           const zsession = detection.confirm()
           session.zmodemState = 'receiving'
-          this.send(IPC.eventZmodem, { sessionId: session.id, type: 'download-start', fileName: 'ZMODEM Download' })
           zsession.on('offer', (xfer: any) => {
-            const path = join(homedir(), 'Downloads', xfer.get_details().name)
-            const file = require('fs').createWriteStream(path)
-            xfer.accept().then(() => {})
-            xfer.on('input', (payload: any) => file.write(Buffer.from(payload)))
-            xfer.on('close', () => {
-              file.end()
-              this.send(IPC.eventZmodem, { sessionId: session.id, type: 'download-end' })
-              session.zmodemState = 'idle'
-            })
+            const fileName = safeFileName(xfer.get_details()?.name)
+            const downloadDir = join(homedir(), 'Downloads')
+            const filePath = join(downloadDir, fileName)
+            this.send(IPC.eventZmodem, { sessionId: session.id, type: 'download-start', fileName })
+            void (async () => {
+              let settled = false
+              let file: ReturnType<typeof createWriteStream> | null = null
+              const fail = (error: unknown): void => {
+                if (settled) return
+                settled = true
+                file?.destroy()
+                session.zmodemState = 'idle'
+                this.send(IPC.eventZmodem, {
+                  sessionId: session.id,
+                  type: 'error',
+                  fileName,
+                  error: describeError(error)
+                })
+              }
+              try {
+                await fs.mkdir(downloadDir, { recursive: true })
+                file = createWriteStream(filePath)
+                file.on('error', fail)
+                file.on('finish', () => {
+                  if (settled) return
+                  settled = true
+                  session.zmodemState = 'idle'
+                  this.send(IPC.eventZmodem, { sessionId: session.id, type: 'download-end', fileName })
+                })
+                xfer.on('error', fail)
+                xfer.on('input', (payload: any) => file?.write(Buffer.from(payload)))
+                xfer.on('close', () => {
+                  if (!settled) file?.end()
+                })
+                await xfer.accept()
+              } catch (error) {
+                fail(error)
+              }
+            })()
           })
           zsession.start()
         }
@@ -347,7 +404,7 @@ export class SessionManager {
     })
 
     stream.on('close', () => this.endSession(session, 'disconnected', 'Сеанс завершён'))
-    stream.on('error', (err) => this.endSession(session, 'error', describeError(err)))
+    stream.on('error', (err: Error) => this.endSession(session, 'error', describeError(err)))
   }
 
   async disconnect(sessionId: string): Promise<void> {
@@ -410,7 +467,7 @@ export class SessionManager {
   }
 
    // Добавляем таймаут для exec, чтобы повисшие команды не блокировали очередь
-  private async execCommand(sessionId: string, command: string): Promise<string> {
+  private async execCommand(sessionId: string, command: string): Promise<{ output: string; code: number | null }> {
     const session = this.sessions.get(sessionId)
     if (!session || !session.client || session.profile.protocol !== 'ssh') {
       throw new Error('Нет активного SSH-соединения')
@@ -419,47 +476,79 @@ export class SessionManager {
       session.client!.exec(command, (err, stream) => {
         if (err) return reject(err)
         let output = ''
-        
+        let settled = false
+
         // Убиваем процесс, если он завис дольше 5 секунд
         const timeout = setTimeout(() => {
+          if (settled) return
+          settled = true
           stream.close()
           reject(new Error('Timeout'))
         }, 5000)
 
         stream.on('data', (data: Buffer) => { output += data.toString('utf8') })
         stream.stderr.on('data', (data: Buffer) => { output += data.toString('utf8') })
-        stream.on('close', () => {
+        stream.on('close', (code?: number | null) => {
+          if (settled) return
+          settled = true
           clearTimeout(timeout)
-          resolve(output)
+          resolve({ output, code: typeof code === 'number' ? code : 0 })
+        })
+        stream.on('error', (streamError: Error) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          reject(streamError)
         })
       })
     })
   }
 
   async cronList(sessionId: string): Promise<CronJob[]> {
-    // Используем /bin/sh, чтобы base64 и crontab работали в любом окружении
-    const output = await this.execCommand(sessionId, 'crontab -l 2>/dev/null || true')
-    const lines = output.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
-    
-    return lines.map((line, index) => {
-      // Пытаемся выделить 5 полей расписания и команду
-      const match = line.match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/)
-      if (match) {
-        return { id: String(index), schedule: match[1], command: match[2] }
+    const { output, code } = await this.execCommand(sessionId, 'crontab -l 2>/dev/null')
+    if (code !== 0 && code !== 1) throw new Error('Не удалось прочитать crontab')
+    const lines = output.replace(/\r/g, '').split('\n')
+    this.cronRaw.set(sessionId, lines)
+    const jobs: CronJob[] = []
+    lines.forEach((line, index) => {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#') || isCronEnvironment(trimmed)) return
+      const macro = trimmed.match(/^(@\w+)\s+(.+)$/)
+      if (macro) {
+        jobs.push({ id: String(index), schedule: macro[1], command: macro[2] })
+        return
       }
-      return { id: String(index), schedule: '* * * * *', command: line }
+      const match = trimmed.match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/)
+      if (match) jobs.push({ id: String(index), schedule: match[1], command: match[2] })
     })
+    return jobs
   }
 
   async cronSave(sessionId: string, jobs: CronJob[]): Promise<ApiResult> {
     try {
-      const content = jobs.map(j => `${j.schedule} ${j.command}`).join('\n') + '\n'
+      const preserved = (this.cronRaw.get(sessionId) ?? [])
+        .map((line) => line.trimEnd())
+        .filter((line) => {
+          const trimmed = line.trim()
+          return Boolean(trimmed) && (trimmed.startsWith('#') || isCronEnvironment(trimmed))
+        })
+      const jobLines = jobs.map((job) => {
+        const schedule = String(job?.schedule ?? '').trim()
+        const command = String(job?.command ?? '').trim()
+        if (!schedule || !command) throw new Error('У задания cron не заполнено расписание или команда')
+        if (/[\r\n]/.test(schedule) || /[\r\n]/.test(command)) throw new Error('Недопустимые символы в задании cron')
+        return `${schedule} ${command}`
+      })
+      const lines = [...preserved, ...jobLines]
+      const content = lines.length > 0 ? `${lines.join('\n')}\n` : ''
       // Кодируем в base64, чтобы избежать проблем с кавычками и спецсимволами в командах
       const base64 = Buffer.from(content, 'utf8').toString('base64')
       
       // Записываем через временный файл в /tmp, чтобы избежать проблем с pipe
-      const cmd = `echo "${base64}" | base64 -d | crontab -`
-      await this.execCommand(sessionId, cmd)
+      const cmd = `printf '%s' '${base64}' | base64 -d | crontab -`
+      const { code, output } = await this.execCommand(sessionId, cmd)
+      if (code !== 0) throw new Error(output.trim() || 'Не удалось сохранить crontab')
+      this.cronRaw.set(sessionId, lines)
       return { ok: true }
     } catch (e) {
       return { ok: false, error: describeError(e) }
@@ -481,6 +570,7 @@ export class SessionManager {
       echo "CPU:$cpu|RAM:$ram|DISK:$disk|TEMP:$temp"
     `
 
+    this.stopStatsPolling(sessionId)
     let isPolling = false
     const interval = setInterval(async () => {
       const s = this.sessions.get(sessionId)
@@ -493,7 +583,7 @@ export class SessionManager {
       isPolling = true
 
       try {
-        const output = await this.execCommand(sessionId, script)
+        const { output } = await this.execCommand(sessionId, script)
         const match = output.match(/CPU:(.*?)\|RAM:(.*?)\|DISK:(.*?)\|TEMP:(.*)/)
         if (match) {
           this.send(IPC.eventStats, {
@@ -543,12 +633,15 @@ export class SessionManager {
     emit(0, 0, false)
     this.enqueueTransfer(async () => {
       try {
+        if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
         const sftp = await this.getSftp(sessionId)
         const stats = await fs.stat(localPath)
+        const resolvedDir = await this.resolveRemotePath(sftp, remoteDir)
         if (stats.isDirectory()) {
-          await this.uploadDirRecursive(sftp, localPath, remoteDir, emit, transferId)
+          const targetDir = remoteJoin(resolvedDir, basename(localPath))
+          await this.uploadDirRecursive(sftp, localPath, targetDir, emit, transferId)
         } else {
-          const remotePath = `${remoteDir}/${fileName}`.replace(/\/+/g, '/').replace(/\\/g, '/')
+          const remotePath = remoteJoin(resolvedDir, fileName)
           await this.uploadFileInternal(sftp, localPath, remotePath, stats.size, emit, transferId)
         }
         emit(1, 1, true)
@@ -580,15 +673,17 @@ export class SessionManager {
     emit(0, 0, false)
     this.enqueueTransfer(async () => {
       try {
+        if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
         const sftp = await this.getSftp(sessionId)
+        const resolvedPath = await this.resolveRemotePath(sftp, remotePath)
         const stats = await new Promise<Stats>((res, rej) =>
-          sftp.stat(remotePath, (err, st) => err ? rej(err) : res(st))
+          sftp.stat(resolvedPath, (err, st) => err ? rej(err) : res(st))
         )
         if (stats.isDirectory()) {
-          const finalLocalDir = join(localDir, fileName)
-          await this.downloadDirRecursive(sftp, remotePath, finalLocalDir, emit, transferId)
+          const finalLocalDir = join(localDir, basename(resolvedPath))
+          await this.downloadDirRecursive(sftp, resolvedPath, finalLocalDir, emit, transferId)
         } else {
-          await this.downloadFileInternal(sftp, remotePath, localDir, stats.size, emit, transferId)
+          await this.downloadFileInternal(sftp, resolvedPath, localDir, stats.size, emit, transferId)
         }
         emit(1, 1, true)
       } catch (error) {
@@ -606,25 +701,22 @@ export class SessionManager {
     if (session?.profile.protocol !== 'ssh') throw new Error('SFTP доступен только для SSH')
     if (!session || session.closed || session.status !== 'connected') throw new Error('Сначала подключитесь к серверу')
     const sftp = await this.getSftp(sessionId)
-    let path = remotePath
-    if (path === '~' || path === '' || path === '/~') {
-      path = await new Promise<string>((res, rej) => {
-        sftp.realpath('.', (err, p) => (err ? rej(err) : res(p)))
-      })
-    }
-    const normalized = path.replace(/\/+/g, '/').replace(/\/$/, '') || '/'
+    const normalized = await this.resolveRemotePath(sftp, remotePath)
     const list = await new Promise<FileEntry[]>((res, rej) => {
       sftp.readdir(normalized, (err, list) => (err ? rej(err) : res(list)))
     })
     return list
       .filter((item) => item.filename !== '.' && item.filename !== '..')
-      .map((item) => ({
-        name: item.filename,
-        path: `${normalized === '/' ? '' : normalized}/${item.filename}`,
-        isDirectory: item.attrs.isDirectory(),
-        size: item.attrs.size,
-        mtime: item.attrs.mtime
-      }))
+      .map((item) => {
+        const attrs = item.attrs as Stats
+        return {
+          name: item.filename,
+          path: remoteJoin(normalized, item.filename),
+          isDirectory: attrs.isDirectory(),
+          size: attrs.size,
+          mtime: attrs.mtime
+        }
+      })
   }
 
   async deleteRemote(sessionId: string, remotePath: string): Promise<ApiResult> {
@@ -633,7 +725,8 @@ export class SessionManager {
     if (!session || session.closed || session.status !== 'connected') return { ok: false, error: 'Нет соединения' }
     try {
       const sftp = await this.getSftp(sessionId)
-      await new Promise<void>((res, rej) => { sftp.unlink(remotePath, (err) => err ? rej(err) : res()) })
+      const resolvedPath = await this.resolveRemotePath(sftp, remotePath)
+      await this.deleteRemoteRecursive(sftp, resolvedPath)
       return { ok: true }
     } catch (e) { return { ok: false, error: describeError(e) } }
   }
@@ -669,6 +762,7 @@ export class SessionManager {
     if (session && session.passwordResolver) {
       const resolver = session.passwordResolver
       session.passwordResolver = undefined
+      session.passwordRejector = undefined
       resolver(password)
     }
   }
@@ -678,8 +772,17 @@ export class SessionManager {
     if (session && session.hostKeyResolver) {
       const resolver = session.hostKeyResolver
       session.hostKeyResolver = undefined
+      session.hostKeyRejector = undefined
       resolver(accept)
     }
+  }
+
+  private requestPassword(session: ManagedSession): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      session.passwordResolver = resolve
+      session.passwordRejector = reject
+      this.send(IPC.eventRequestPassword, { sessionId: session.id })
+    })
   }
 
   private enqueueTransfer(task: () => Promise<void>): void {
@@ -706,13 +809,43 @@ export class SessionManager {
     return sftp
   }
 
-  private async uploadDirRecursive(sftp: SFTPWrapper, localDir: string, remoteDir: string, emit: any, transferId: string) {
+  private async resolveRemotePath(sftp: SFTPWrapper, remotePath: string): Promise<string> {
+    let value = String(remotePath ?? '').trim().replace(/\\/g, '/')
+    if (!value || value === '~' || value === '/~' || value === '.') value = '.'
+    else if (value.startsWith('~/')) value = `./${value.slice(2)}`
+    if (value.startsWith('/')) return posix.normalize(value)
+    const base = await new Promise<string>((resolve, reject) => {
+      sftp.realpath('.', (error, path) => (error ? reject(error) : resolve(path)))
+    })
+    return posix.normalize(posix.join(base, value))
+  }
+
+  private async deleteRemoteRecursive(sftp: SFTPWrapper, remotePath: string): Promise<void> {
+    const stats = await new Promise<Stats>((resolve, reject) => {
+      sftp.lstat(remotePath, (error, value) => (error ? reject(error) : resolve(value)))
+    })
+    if (!stats.isDirectory()) {
+      await new Promise<void>((resolve, reject) => sftp.unlink(remotePath, (error) => error ? reject(error) : resolve()))
+      return
+    }
+    const list = await new Promise<FileEntry[]>((resolve, reject) => {
+      sftp.readdir(remotePath, (error, entries) => (error ? reject(error) : resolve(entries)))
+    })
+    for (const item of list) {
+      if (item.filename === '.' || item.filename === '..') continue
+      await this.deleteRemoteRecursive(sftp, remoteJoin(remotePath, item.filename))
+    }
+    await new Promise<void>((resolve, reject) => sftp.rmdir(remotePath, (error) => error ? reject(error) : resolve()))
+  }
+
+  private async uploadDirRecursive(sftp: SFTPWrapper, localDir: string, remoteDir: string, emit: TransferEmitter, transferId: string) {
     if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
     await new Promise<void>((res) => sftp.mkdir(remoteDir, () => res()))
     const entries = await fs.readdir(localDir, { withFileTypes: true })
     for (const entry of entries) {
+      if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
       const localPath = join(localDir, entry.name)
-      const remotePath = `${remoteDir}/${entry.name}`.replace(/\/+/g, '/').replace(/\\/g, '/')
+      const remotePath = remoteJoin(remoteDir, entry.name)
       if (entry.isDirectory()) {
         await this.uploadDirRecursive(sftp, localPath, remotePath, emit, transferId)
       } else if (entry.isFile()) {
@@ -722,50 +855,89 @@ export class SessionManager {
     }
   }
 
-  private async uploadFileInternal(sftp: SFTPWrapper, localPath: string, remotePath: string, size: number, emit: any, transferId: string) {
+  private async uploadFileInternal(sftp: SFTPWrapper, localPath: string, remotePath: string, size: number, emit: TransferEmitter, transferId: string) {
     if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
-    await new Promise<void>((resolve, reject) => {
-      sftp.fastPut(localPath, remotePath, {
-        concurrency: 16, chunkSize: 32768,
-        step: (transferred) => {
-          if (this.cancelledTransfers.has(transferId)) return
-          emit(transferred, size, false)
+    let transferred = 0
+    let cancelled = false
+    const cancelledTransfers = this.cancelledTransfers
+    const tempPath = `${remotePath}.sheller-part-${safeTransferPart(transferId)}`
+    const progress = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (cancelledTransfers.has(transferId)) {
+          cancelled = true
+          callback(new Error('Отменено'))
+          return
         }
-      }, (err) => err ? reject(err) : resolve())
+        transferred += chunk.length
+        emit(transferred, size, false)
+        callback(null, chunk)
+      }
     })
+    const removeTemp = async (): Promise<void> => {
+      await new Promise<void>((resolve) => sftp.unlink(tempPath, () => resolve()))
+    }
+    try {
+      await pipeline(createReadStream(localPath), progress, sftp.createWriteStream(tempPath))
+      if (cancelled || this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
+      await new Promise<void>((resolve, reject) => {
+        sftp.rename(tempPath, remotePath, (error) => error ? reject(error) : resolve())
+      })
+    } catch (error) {
+      await removeTemp()
+      if (cancelled || this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
+      throw error
+    }
   }
 
-  private async downloadDirRecursive(sftp: SFTPWrapper, remoteDir: string, localDir: string, emit: any, transferId: string) {
+  private async downloadDirRecursive(sftp: SFTPWrapper, remoteDir: string, localDir: string, emit: TransferEmitter, transferId: string) {
     if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
     await fs.mkdir(localDir, { recursive: true })
     const list = await new Promise<FileEntry[]>((res, rej) =>
       sftp.readdir(remoteDir, (err, list) => err ? rej(err) : res(list))
     )
     for (const item of list) {
+      if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
       if (item.filename === '.' || item.filename === '..') continue
-      const rPath = `${remoteDir}/${item.filename}`.replace(/\/+/g, '/')
+      const rPath = remoteJoin(remoteDir, item.filename)
       const lPath = join(localDir, item.filename)
-      if (item.attrs.isDirectory()) {
+      const attrs = item.attrs as Stats
+      if (attrs.isDirectory()) {
         await this.downloadDirRecursive(sftp, rPath, lPath, emit, transferId)
-      } else if (item.attrs.isFile()) {
-        await this.downloadFileInternal(sftp, rPath, localDir, item.attrs.size, emit, transferId)
+      } else if (attrs.isFile()) {
+        await this.downloadFileInternal(sftp, rPath, localDir, attrs.size, emit, transferId)
       }
     }
   }
 
-  private async downloadFileInternal(sftp: SFTPWrapper, remotePath: string, localDir: string, size: number, emit: any, transferId: string) {
+  private async downloadFileInternal(sftp: SFTPWrapper, remotePath: string, localDir: string, size: number, emit: TransferEmitter, transferId: string) {
     if (this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
     const fileName = basename(remotePath)
     const localPath = join(localDir, fileName)
-    await new Promise<void>((resolve, reject) => {
-      sftp.fastGet(remotePath, localPath, {
-        concurrency: 16, chunkSize: 32768,
-        step: (transferred) => {
-          if (this.cancelledTransfers.has(transferId)) return
-          emit(transferred, size, false)
+    const tempPath = `${localPath}.sheller-part-${safeTransferPart(transferId)}`
+    let transferred = 0
+    let cancelled = false
+    const cancelledTransfers = this.cancelledTransfers
+    const progress = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (cancelledTransfers.has(transferId)) {
+          cancelled = true
+          callback(new Error('Отменено'))
+          return
         }
-      }, (err) => err ? reject(err) : resolve())
+        transferred += chunk.length
+        emit(transferred, size, false)
+        callback(null, chunk)
+      }
     })
+    try {
+      await pipeline(sftp.createReadStream(remotePath), progress, createWriteStream(tempPath))
+      if (cancelled || this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
+      await fs.rename(tempPath, localPath)
+    } catch (error) {
+      await fs.unlink(tempPath).catch(() => undefined)
+      if (cancelled || this.cancelledTransfers.has(transferId)) throw new Error('Отменено')
+      throw error
+    }
   }
 
   private endSession(session: ManagedSession, status: Extract<SessionStatus, 'disconnected' | 'error'>, message?: string) {
@@ -773,6 +945,14 @@ export class SessionManager {
     session.closed = true
     this.stopStatsPolling(session.id)
     this.sftpCache.delete(session.id)
+    this.cronRaw.delete(session.id)
+    const cancelError = new Error(message ?? 'Соединение отменено')
+    session.passwordRejector?.(cancelError)
+    session.hostKeyRejector?.(cancelError)
+    session.passwordResolver = undefined
+    session.passwordRejector = undefined
+    session.hostKeyResolver = undefined
+    session.hostKeyRejector = undefined
     try { session.stream?.end() } catch {}
     try { session.telnetConnection?.destroy() } catch {}
     for (const c of session.clients) { try { c.end(); c.destroy() } catch {} }
@@ -1101,6 +1281,43 @@ export class SessionManager {
 // ==========================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // ==========================================
+function createTunnelStates(profile: ConnectionProfile): Map<string, TunnelState> {
+  return new Map(profile.tunnels.map((tunnel) => [
+    tunnel.id,
+    {
+      config: { ...tunnel },
+      status: 'stopped' as const,
+      generation: 0,
+      sockets: new Set<Socket>()
+    }
+  ]))
+}
+
+function safeFileName(value: unknown): string {
+  const name = basename(String(value ?? '').replace(/\\/g, '/'))
+  if (!name || name === '.' || name === '..') return 'zmodem-download.bin'
+  return name
+}
+
+function resolveAgentPath(): string | undefined {
+  const fromEnvironment = process.env.SSH_AUTH_SOCK?.trim()
+  if (fromEnvironment) return fromEnvironment
+  if (process.platform === 'win32') return '\\\\.\\pipe\\openssh-ssh-agent'
+  return undefined
+}
+
+function remoteJoin(directory: string, name: string): string {
+  return posix.join(directory === '/' ? '/' : directory.replace(/\/+$/, ''), name.replace(/^\/+/, ''))
+}
+
+function isCronEnvironment(line: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(line)
+}
+
+function safeTransferPart(transferId: string): string {
+  return transferId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || String(Date.now())
+}
+
 function normalizeDimension(value: number, fallback: number, min: number, max: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback

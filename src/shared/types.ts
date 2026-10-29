@@ -48,7 +48,12 @@ export const IPC = {
   sessionRenameRemote: 'session:rename-remote',
   
   sessionGetStats: 'session:get-stats',
+  sessionStopStats: 'session:stop-stats',
   eventStats: 'event:session-stats',
+
+  windowGetFullscreen: 'window:get-fullscreen',
+  windowSetFullscreen: 'window:set-fullscreen',
+  windowFullscreenChanged: 'window:fullscreen-changed',
 
   updateCheck: 'update:check',
   updateDownload: 'update:download',
@@ -292,7 +297,7 @@ export interface ShellerApi {
     onTunnels: (listener: (event: TunnelsUpdatedEvent) => void) => () => void
     onTransfer: (listener: (event: FileTransferProgressEvent) => void) => () => void
     onZmodem: (listener: (event: ZmodemEvent) => void) => () => void
-    onHostKeyVerify: (listener: (event: { sessionId: string; hostKey: string }) => void) => () => void
+    onHostKeyVerify: (listener: (event: { sessionId: string; hostKey: string; previousHostKey?: string }) => void) => () => void
     onRequestPassword: (listener: (event: { sessionId: string }) => void) => () => void
     onAttach: (listener: (event: { sessionId: string; profileId: string }) => void) => () => void
 
@@ -317,6 +322,7 @@ export interface ShellerApi {
   }
   
   window: {
+    isFullscreen: () => Promise<boolean>
     setFullscreen: (value: boolean) => void
     onFullscreenChange: (listener: (isFullscreen: boolean) => void) => () => void
   }

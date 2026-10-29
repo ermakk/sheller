@@ -7,6 +7,7 @@ import type { Snippet } from '../shared/types'
 export class SnippetStore {
   private data: Snippet[] = []
   private loaded = false
+  private initPromise: Promise<void> | null = null
   private writeQueue: Promise<void> = Promise.resolve()
 
   constructor(private readonly filePath: string) {}
@@ -17,15 +18,23 @@ export class SnippetStore {
 
   async init(): Promise<void> {
     if (this.loaded) return
-    this.loaded = true
+    if (!this.initPromise) this.initPromise = this.load()
+    await this.initPromise
+  }
+
+  private async load(): Promise<void> {
     try {
       const raw = await fs.readFile(this.filePath, 'utf8')
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) this.data = parsed
+      if (Array.isArray(parsed)) {
+        this.data = parsed.filter((item): item is Snippet => Boolean(item) && typeof item.id === 'string')
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') console.error('Failed to read snippets:', error)
       this.data = []
+    } finally {
+      this.loaded = true
     }
   }
 

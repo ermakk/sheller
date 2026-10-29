@@ -42,7 +42,8 @@ export default function App(): JSX.Element {
   
   const [splitSessions, setSplitSessions] = useState<Record<string, { session: SessionTab; merged: boolean }>>({})
   const [pwdPrompt, setPwdPrompt] = useState<{ sessionId: string } | null>(null)
-  const [hostKeyPrompt, setHostKeyPrompt] = useState<{ sessionId: string; hostKey: string } | null>(null)
+  const [hostKeyPrompt, setHostKeyPrompt] = useState<{ sessionId: string; hostKey: string; previousHostKey?: string } | null>(null)
+  const [fullscreenPaneId, setFullscreenPaneId] = useState<string | null>(null)
 
   const profilesRef = useRef(profiles)
   useEffect(() => { profilesRef.current = profiles }, [profiles])
@@ -88,9 +89,23 @@ export default function App(): JSX.Element {
     })
     const unsubscribeTunnels = window.sheller.events.onTunnels((event) => {
       setSessions((previous) => previous.map((session) => session.id === event.sessionId ? { ...session, tunnels: event.tunnels } : session))
+      setSplitSessions((previous) => {
+        let changed = false
+        const next = { ...previous }
+        for (const [parentId, entry] of Object.entries(next)) {
+          if (entry.session.id === event.sessionId) {
+            next[parentId] = { ...entry, session: { ...entry.session, tunnels: event.tunnels } }
+            changed = true
+          }
+        }
+        return changed ? next : previous
+      })
     })
     const unPwd = window.sheller.events.onRequestPassword((e) => setPwdPrompt(e))
     const unKey = window.sheller.events.onHostKeyVerify((e) => setHostKeyPrompt(e))
+    const unFullscreen = window.sheller.window.onFullscreenChange((value) => {
+      if (!value) setFullscreenPaneId(null)
+    })
     const unAttach = window.sheller.events.onAttach(({ sessionId, profileId }) => {
       const profile = profilesRef.current.find((p) => p.id === profileId)
       if (!profile) return
@@ -100,7 +115,7 @@ export default function App(): JSX.Element {
       })
       setActiveSessionId(sessionId)
     })
-    return () => { unsubscribeStatus(); unsubscribeTunnels(); unPwd(); unKey(); unAttach() }
+    return () => { unsubscribeStatus(); unsubscribeTunnels(); unPwd(); unKey(); unAttach(); unFullscreen() }
   }, [])
 
   useEffect(() => {
@@ -195,6 +210,25 @@ export default function App(): JSX.Element {
   }, [sessions, activeSessionId, splitSessions])
 
   const reconnectSession = useCallback((sessionId: string) => {
+    const splitEntry = Object.entries(splitSessions).find(([, entry]) => entry.session.id === sessionId)
+    if (splitEntry) {
+      const [parentId, entry] = splitEntry
+      const latest = profiles.find((profile) => profile.id === entry.session.profile.id)
+      if (!latest) {
+        addToast('error', 'Профиль удалён', 'Сначала восстановите профиль.')
+        return
+      }
+      const nextId = crypto.randomUUID()
+      void window.sheller.sessions.disconnect(sessionId)
+      setSplitSessions((previous) => previous[parentId] ? {
+        ...previous,
+        [parentId]: {
+          ...previous[parentId],
+          session: { ...entry.session, id: nextId, profile: latest, status: 'connecting', tunnels: latest.tunnels.map((tunnel) => ({ ...tunnel, status: 'stopped' })) }
+        }
+      } : previous)
+      return
+    }
     const current = sessions.find(s => s.id === sessionId)
     if (!current) return
     const secondary = splitSessions[sessionId]
@@ -313,11 +347,11 @@ export default function App(): JSX.Element {
                 <div key={session.id} className={`session-wrapper ${isActive ? 'is-active' : ''}`}>
                   {secondary ? (
                     <div className="split-container vertical">
-                      <TerminalPane session={session} active={isActive} autoFocus={true} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={closeSplit} />
-                      <TerminalPane session={secondary.session} active={isActive} autoFocus={false} onReconnect={() => reconnectSession(secondary.session.id)} onClose={closeSplit} onFilesDropped={(paths) => uploadDroppedFiles(secondary.session.id, paths)} onSplit={closeSplit} />
+                      <TerminalPane session={session} active={isActive} autoFocus={true} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={closeSplit} />
+                      <TerminalPane key={secondary.session.id} session={secondary.session} active={isActive} autoFocus={false} isFullscreenOwner={fullscreenPaneId === secondary.session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? secondary.session.id : null)} onReconnect={() => reconnectSession(secondary.session.id)} onClose={closeSplit} onFilesDropped={(paths) => uploadDroppedFiles(secondary.session.id, paths)} onSplit={closeSplit} />
                     </div>
                   ) : (
-                    <TerminalPane session={session} active={isActive} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={isActive ? handleSplit : undefined} onOpenSnippets={isActive ? () => setSnippetsPanelOpen(true) : undefined} onOpenCron={isActive ? () => setCronModalOpen(true) : undefined} />
+                    <TerminalPane session={session} active={isActive} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={isActive ? handleSplit : undefined} onOpenSnippets={isActive ? () => setSnippetsPanelOpen(true) : undefined} onOpenCron={isActive ? () => setCronModalOpen(true) : undefined} />
                   )}
                 </div>
               )
@@ -356,7 +390,7 @@ export default function App(): JSX.Element {
       {deleteTarget && <ConfirmDialog title="Удалить подключение?" description={`«${deleteTarget.name}» будет удалён.`} confirmLabel="Удалить" busy={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={() => void confirmDelete()} />}
       {downloadDialogSession && <FileTransferDialog session={downloadDialogSession} onClose={() => setDownloadDialogSession(null)} />}
       {pwdPrompt && <PasswordPrompt onConfirm={(pwd) => { window.sheller.sessions.providePassword(pwdPrompt.sessionId, pwd); setPwdPrompt(null) }} onCancel={() => { window.sheller.sessions.disconnect(pwdPrompt.sessionId); setPwdPrompt(null) }} />}
-      {hostKeyPrompt && <ConfirmDialog title="Неизвестный сервер" description={`Отпечаток ключа: ${hostKeyPrompt.hostKey}. Вы доверяете этому серверу?`} confirmLabel="Доверять" onConfirm={() => { window.sheller.sessions.provideHostKey(hostKeyPrompt.sessionId, true); setHostKeyPrompt(null) }} onCancel={() => { window.sheller.sessions.provideHostKey(hostKeyPrompt.sessionId, false); setHostKeyPrompt(null) }} />}
+      {hostKeyPrompt && <ConfirmDialog title={hostKeyPrompt.previousHostKey ? 'Ключ сервера изменился!' : 'Неизвестный сервер'} description={`Отпечаток ключа: ${hostKeyPrompt.hostKey}.${hostKeyPrompt.previousHostKey ? ' Ранее сервер использовал другой ключ — это может быть подмена сервера.' : ''} Вы доверяете этому серверу?`} confirmLabel="Доверять" onConfirm={() => { window.sheller.sessions.provideHostKey(hostKeyPrompt.sessionId, true); setHostKeyPrompt(null) }} onCancel={() => { window.sheller.sessions.provideHostKey(hostKeyPrompt.sessionId, false); setHostKeyPrompt(null) }} />}
       {cronModalOpen && activeSession && (
         <CronModal 
           sessionId={activeSession.id} 
@@ -365,7 +399,7 @@ export default function App(): JSX.Element {
       )}
 
       <div className="bottom-area">
-        <TransferList transfers={transfers} onDismiss={dismissTransfer} />
+        <TransferList transfers={transfers} onDismiss={dismissTransfer} onCancel={(id) => void window.sheller.files.cancel(id)} />
         <Toasts toasts={toasts} onDismiss={dismissToast} />
         <UpdateBanner />
       </div>

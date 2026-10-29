@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Pencil,
   Play,
   Plus,
   Search,
   ShieldCheck,
+  Upload,
   Waypoints,
   X
 } from 'lucide-react'
@@ -21,6 +23,8 @@ interface SidebarProps {
   onConnect: (profile: ConnectionProfile) => void
   onNew: () => void
   onEdit: (profile: ConnectionProfile) => void
+  onExport: () => void
+  onImport: () => void
 }
 
 interface ProfileGroup {
@@ -34,7 +38,9 @@ export function Sidebar({
   loading,
   onConnect,
   onNew,
-  onEdit
+  onEdit,
+  onExport,
+  onImport
 }: SidebarProps): JSX.Element {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -255,10 +261,14 @@ export function Sidebar({
         <span className="sidebar-security">
           <ShieldCheck size={14} />
           <span>
-            <strong>Защищённое хранилище</strong>
-            <small>Пароли шифруются локально</small>
+            <strong>Локальное хранилище</strong>
+            <small>Пароли хранятся на компьютере</small>
           </span>
         </span>
+        <div className="sidebar-footer-actions">
+          <button type="button" className="sidebar-footer-button" onClick={onImport} title="Импортировать профили" aria-label="Импортировать профили"><Upload size={13} /></button>
+          <button type="button" className="sidebar-footer-button" onClick={onExport} title="Экспортировать профили" aria-label="Экспортировать профили"><Download size={13} /></button>
+        </div>
         <span className="sidebar-total">{profiles.length}</span>
       </div>
     </aside>

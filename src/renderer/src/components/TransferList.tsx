@@ -6,14 +6,17 @@ import { formatBytes } from '../utils'
 interface TransferListProps {
   transfers: FileTransfer[]
   onDismiss: (transferId: string) => void
+  onCancel: (transferId: string) => void
 }
 
 function TransferItem({
   transfer,
-  onDismiss
+  onDismiss,
+  onCancel
 }: {
   transfer: FileTransfer
   onDismiss: (id: string) => void
+  onCancel: (id: string) => void
 }): JSX.Element {
   useEffect(() => {
     if (transfer.done && !transfer.error) {
@@ -66,8 +69,9 @@ function TransferItem({
       <button
         type="button"
         className="transfer-close"
-        onClick={() => onDismiss(transfer.transferId)}
-        aria-label="Убрать"
+        onClick={() => active ? onCancel(transfer.transferId) : onDismiss(transfer.transferId)}
+        aria-label={active ? 'Отменить' : 'Убрать'}
+        title={active ? 'Отменить' : 'Убрать'}
       >
         <X size={13} />
       </button>
@@ -75,12 +79,12 @@ function TransferItem({
   )
 }
 
-export function TransferList({ transfers, onDismiss }: TransferListProps): JSX.Element | null {
+export function TransferList({ transfers, onDismiss, onCancel }: TransferListProps): JSX.Element | null {
   if (transfers.length === 0) return null
   return (
     <div className="transfer-list" aria-live="polite">
       {transfers.map((transfer) => (
-        <TransferItem key={transfer.transferId} transfer={transfer} onDismiss={onDismiss} />
+        <TransferItem key={transfer.transferId} transfer={transfer} onDismiss={onDismiss} onCancel={onCancel} />
       ))}
     </div>
   )

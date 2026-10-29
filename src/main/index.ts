@@ -3,7 +3,7 @@ import {
   session as electronSession, shell, Tray, nativeImage,
   type OpenDialogOptions
 } from 'electron'
-import { promises as fs, existsSync  } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '../shared/types'
 import type {
@@ -41,6 +41,21 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+function sendFullscreenState(win: BrowserWindow, value: boolean): void {
+  if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+    win.webContents.send(IPC.windowFullscreenChanged, value)
+  }
+}
+
+function configureWindow(win: BrowserWindow): void {
+  win.on('enter-full-screen', () => sendFullscreenState(win, true))
+  win.on('leave-full-screen', () => sendFullscreenState(win, false))
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url)
+    return { action: 'deny' }
+  })
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1320, height: 840, minWidth: 980, minHeight: 620, show: false,
@@ -57,8 +72,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
-  mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window:fullscreen-changed', true))
-  mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window:fullscreen-changed', false))
+  configureWindow(mainWindow)
   
   // [NEW] Обработка закрытия в трей
   mainWindow.on('close', (event) => {
@@ -103,7 +117,9 @@ function createTray() {
 function openExternal(url: string): void {
   try {
     const parsed = new URL(url)
-    if (['https:', 'http:', 'mailto:'].includes(parsed.protocol)) void shell.openExternal(url)
+    if (['https:', 'http:', 'mailto:'].includes(parsed.protocol)) {
+      void shell.openExternal(url).catch(() => undefined)
+    }
   } catch { undefined }
 }
 
@@ -113,19 +129,6 @@ function profileError(error: unknown): ProfileActionResult {
 
 function registerIpc(): void {
   // --- Профили ---
-  ipcMain.on(IPC.sessionGetStats, (_e, sessionId: string) => {
-    if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
-  })
-  ipcMain.on('window:set-fullscreen', (event, value: boolean) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      win.setFullScreen(value)
-    }
-  })
-  // Добавляем обработчик остановки
-  ipcMain.on('session:stop-stats', (_e, sessionId: string) => {
-    if (typeof sessionId === 'string') manager.stopStatsPolling(sessionId)
-  })
   ipcMain.handle(IPC.profilesList, async (): Promise<ConnectionProfile[]> => store.list())
   ipcMain.handle(IPC.profilesSave, async (_event, id: unknown, draft: ProfileDraft): Promise<ProfileActionResult> => {
     try {
@@ -200,6 +203,21 @@ function registerIpc(): void {
   })
 
   // --- Сессии и Окна ---
+  ipcMain.on(IPC.windowSetFullscreen, (event, value: unknown) => {
+    if (typeof value !== 'boolean') return
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && !win.isDestroyed()) win.setFullScreen(value)
+  })
+  ipcMain.handle(IPC.windowGetFullscreen, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return Boolean(win && !win.isDestroyed() && win.isFullScreen())
+  })
+  ipcMain.on(IPC.sessionGetStats, (_e, sessionId: unknown) => {
+    if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
+  })
+  ipcMain.on(IPC.sessionStopStats, (_e, sessionId: unknown) => {
+    if (typeof sessionId === 'string') manager.stopStatsPolling(sessionId)
+  })
   ipcMain.handle(IPC.sessionConnect, async (_event, request: SessionConnectRequest) => manager.connect(request))
   ipcMain.handle(IPC.sessionDisconnect, async (_event, sessionId: unknown) => {
     if (typeof sessionId === 'string') await manager.disconnect(sessionId)
@@ -208,6 +226,7 @@ function registerIpc(): void {
     if (typeof sessionId !== 'string' || typeof profileId !== 'string') return
     const win = new BrowserWindow({
       width: 1100, height: 750, show: false, backgroundColor: '#080b11', autoHideMenuBar: true,
+      icon: getIconPath('ico'),
       ...(process.platform === 'win32' ? {
         titleBarStyle: 'hidden' as const,
         titleBarOverlay: { color: '#0a0e15', symbolColor: '#93a0b8', height: 44 }
@@ -215,6 +234,7 @@ function registerIpc(): void {
       webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
     })
     win.on('ready-to-show', () => win.show())
+    configureWindow(win)
     ;(win as any)._attached = false
     win.on('closed', () => {
       if (!(win as any)._attached) void manager.disconnect(sessionId)
@@ -226,7 +246,12 @@ function registerIpc(): void {
     if (typeof sessionId !== 'string' || typeof profileId !== 'string') return
     const win = BrowserWindow.fromWebContents(event.sender)
     if (win) { ;(win as any)._attached = true; win.close() }
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.eventAttach, { sessionId, profileId })
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+      mainWindow.webContents.send(IPC.eventAttach, { sessionId, profileId })
+    }
   })
   ipcMain.on(IPC.sessionWrite, (_e, id: unknown, data: unknown) => {
     if (typeof id === 'string' && typeof data === 'string') manager.write(id, data)
@@ -244,15 +269,6 @@ function registerIpc(): void {
     if (typeof sid !== 'string' || typeof tid !== 'string') return { ok: false, error: 'Неверный запрос' }
     return manager.stopTunnel(sid, tid)
   })
-
-  // --- Состояние ---
-
-   ipcMain.on(IPC.sessionGetStats, (_e, sessionId: string) => {
-    if (typeof sessionId === 'string') void manager.startStatsPolling(sessionId)
-  })
-
-  // Если нужно остановить опрос при неактивной вкладке
-  // ipcMain.on('session:stop-stats', (_e, sessionId: string) => manager.stopStatsPolling(sessionId))
 
   // --- Файлы (SFTP) ---
   ipcMain.handle(IPC.sessionPickUpload, async (_e, type: unknown) => {
@@ -353,9 +369,13 @@ if (!app.requestSingleInstanceLock()) {
     if (mainWindow) setupAutoUpdater(mainWindow)
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (!mainWindow) {
         createWindow()
         if (mainWindow) setupAutoUpdater(mainWindow)
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
       }
     })
   })
@@ -363,6 +383,7 @@ if (!app.requestSingleInstanceLock()) {
 
 app.on('before-quit', () => {
   isQuitting = true
+  stopAutoUpdater()
   manager?.dispose()
 })
 

@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { Loader2, Trash2, X } from 'lucide-react'
 
 interface ConfirmDialogProps {
@@ -17,7 +18,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel
 }: ConfirmDialogProps): JSX.Element {
-  return (
+  return createPortal(
     <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={onCancel}>
       <div
         className="confirm-dialog"
@@ -55,6 +56,7 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

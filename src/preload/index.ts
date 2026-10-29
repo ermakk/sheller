@@ -44,7 +44,7 @@ const api: ShellerApi = {
     cronSave: (sessionId, jobs) => ipcRenderer.invoke(IPC.cronSave, sessionId, jobs),
     
     startStatsPolling: (sessionId) => ipcRenderer.send(IPC.sessionGetStats, sessionId),
-    stopStatsPolling: (sessionId) => ipcRenderer.send('session:stop-stats', sessionId),
+    stopStatsPolling: (sessionId) => ipcRenderer.send(IPC.sessionStopStats, sessionId),
   },
   events: {
     onData: (fn) => subscribe<SessionDataEvent>(IPC.eventData, fn),
@@ -52,7 +52,7 @@ const api: ShellerApi = {
     onTunnels: (fn) => subscribe<TunnelsUpdatedEvent>(IPC.eventTunnels, fn),
     onTransfer: (fn) => subscribe<FileTransferProgressEvent>(IPC.eventTransfer, fn),
     onZmodem: (fn) => subscribe<ZmodemEvent>(IPC.eventZmodem, fn),
-    onHostKeyVerify: (fn) => subscribe<{ sessionId: string; hostKey: string }>(IPC.eventHostKeyVerify, fn),
+    onHostKeyVerify: (fn) => subscribe<{ sessionId: string; hostKey: string; previousHostKey?: string }>(IPC.eventHostKeyVerify, fn),
     onRequestPassword: (fn) => subscribe<{ sessionId: string }>(IPC.eventRequestPassword, fn),
     onAttach: (fn) => subscribe<{ sessionId: string; profileId: string }>(IPC.eventAttach, fn),
     onStats: (fn) => subscribe<{ sessionId: string; stats: SystemStats }>(IPC.eventStats, fn)
@@ -74,12 +74,9 @@ const api: ShellerApi = {
     writeText: (text) => ipcRenderer.send(IPC.clipboardWrite, text)
   },
   window: {
-    setFullscreen: (value) => ipcRenderer.send('window:set-fullscreen', value),
-    onFullscreenChange: (listener) => {
-      const handler = (_e: any, isFullscreen: boolean) => listener(isFullscreen)
-      ipcRenderer.on('window:fullscreen-changed', handler)
-      return () => ipcRenderer.removeListener('window:fullscreen-changed', handler)
-    }
+    isFullscreen: () => ipcRenderer.invoke(IPC.windowGetFullscreen),
+    setFullscreen: (value) => ipcRenderer.send(IPC.windowSetFullscreen, value),
+    onFullscreenChange: (listener) => subscribe<boolean>(IPC.windowFullscreenChanged, listener)
   },
 }
 

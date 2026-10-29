@@ -14,6 +14,8 @@ interface TerminalPaneProps {
   active: boolean
   autoFocus?: boolean
   autoConnect?: boolean
+  isFullscreenOwner?: boolean
+  onFullscreenOwnerChange?: (owner: boolean) => void
   onReconnect: () => void
   onClose: () => void
   onFilesDropped: (localPaths: string[]) => void
@@ -23,32 +25,49 @@ interface TerminalPaneProps {
 }
 
 export function TerminalPane({
-  session, active, autoFocus = true, autoConnect = true,
-  onReconnect, onClose, onFilesDropped, onSplit, onOpenSnippets, onOpenCron
+  session, active, autoFocus = true, autoConnect = true, isFullscreenOwner = true,
+  onFullscreenOwnerChange, onReconnect, onClose, onFilesDropped, onSplit, onOpenSnippets, onOpenCron
 }: TerminalPaneProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const activeRef = useRef(active)
+  const fullscreenRef = useRef(false)
+  const fullscreenOwnerRef = useRef(isFullscreenOwner)
   const [hasSelection, setHasSelection] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
 
   useEffect(() => {
-    return window.sheller.window.onFullscreenChange((fs) => {
-      setIsFullscreen(fs)
+    let mounted = true
+    void window.sheller.window.isFullscreen().then((value) => {
+      if (!mounted) return
+      fullscreenRef.current = value
+      setIsFullscreen(value)
+    }).catch(() => undefined)
+    const unsubscribe = window.sheller.window.onFullscreenChange((value) => {
+      fullscreenRef.current = value
+      setIsFullscreen(value)
     })
-  }, [])
-
-  useEffect(() => {
     return () => {
-      window.sheller.window.setFullscreen(false)
+      mounted = false
+      unsubscribe()
+      if (activeRef.current && fullscreenRef.current && fullscreenOwnerRef.current) {
+        fullscreenRef.current = false
+        window.sheller.window.setFullscreen(false)
+      }
     }
   }, [])
 
+  useEffect(() => {
+    fullscreenOwnerRef.current = isFullscreenOwner
+  }, [isFullscreenOwner])
+
   const toggleFullscreen = (value: boolean) => {
+    fullscreenRef.current = value
     setIsFullscreen(value)
+    onFullscreenOwnerChange?.(value)
     window.sheller.window.setFullscreen(value)
   }
 
@@ -183,6 +202,7 @@ export function TerminalPane({
   const failed = session.status === 'error' || session.status === 'disconnected' || Boolean(localError)
   const message = localError ?? session.message ?? (session.status === 'disconnected' ? 'Соединение закрыто' : 'Не удалось подключиться')
   const connecting = session.status === 'connecting' && !localError
+  const showFullscreen = active && isFullscreen && isFullscreenOwner
 
   const renderTools = () => (
     <>
@@ -196,7 +216,7 @@ export function TerminalPane({
 
   return (
     <section
-      className={`terminal-pane ${active ? 'is-active' : ''} ${dragOver ? 'is-drop-target' : ''} ${isFullscreen ? 'is-fullscreen' : ''}`}
+      className={`terminal-pane ${active ? 'is-active' : ''} ${dragOver ? 'is-drop-target' : ''} ${showFullscreen ? 'is-fullscreen' : ''}`}
       aria-hidden={!active}
       aria-label={`Терминал ${session.profile.name}`}
       onDragOver={(event) => {
@@ -216,16 +236,16 @@ export function TerminalPane({
       )}
 
       {!connecting && (
-        <div className={`terminal-tools ${isFullscreen ? 'is-floating-fullscreen' : ''}`}>
-          {isFullscreen && (
+        <div className={`terminal-tools ${showFullscreen ? 'is-floating-fullscreen' : ''}`}>
+          {showFullscreen && (
             <div className="terminal-floating-title">
               <span>{session.profile.name}</span>
               <span className="terminal-floating-host">{session.profile.username}@{session.profile.host}</span>
             </div>
           )}
           {renderTools()}
-          <button type="button" className="terminal-tool" onClick={() => toggleFullscreen(!isFullscreen)} title={isFullscreen ? "Выйти из полноэкранного режима" : "На весь экран"}>
-            {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          <button type="button" className="terminal-tool" onClick={() => toggleFullscreen(!showFullscreen)} title={showFullscreen ? "Выйти из полноэкранного режима" : "На весь экран"}>
+            {showFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
         </div>
       )}
