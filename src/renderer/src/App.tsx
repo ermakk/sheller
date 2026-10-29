@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownToLine, ArrowUpFromLine, FolderUp, Loader2, Settings2, Waypoints, Activity } from 'lucide-react'
-import type { ConnectionProfile, ProfileActionResult, ProfileDraft } from '@shared/types'
+import type { ConnectionProfile, ProfileActionResult, ProfileDraft, Snippet } from '@shared/types'
+import { shortcutFromEvent } from '@shared/shortcuts'
 import { ConnectionModal } from './components/ConnectionModal'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { FileTransferDialog } from './components/FileTransferDialog'
@@ -8,6 +9,7 @@ import { PasswordPrompt } from './components/PasswordPrompt'
 import { Sidebar } from './components/Sidebar'
 import { SFTPPanel } from './components/SFTPPanel'
 import { SnippetsPanel } from './components/SnippetsPanel'
+import { SnippetQuickBar } from './components/SnippetQuickBar'
 import { CronModal } from './components/CronModal'
 import { TabBar } from './components/TabBar'
 import { TerminalPane } from './components/TerminalPane'
@@ -25,6 +27,7 @@ type EditorState = { profile: ConnectionProfile | null }
 
 export default function App(): JSX.Element {
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([])
+  const [snippets, setSnippets] = useState<Snippet[]>([])
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState<SessionTab[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
@@ -69,6 +72,14 @@ export default function App(): JSX.Element {
     let mounted = true
     setLoading(true)
     void window.sheller.profiles.list().then((list) => { if (mounted) setProfiles(list) }).catch((error) => { if (mounted) addToast('error', 'Ошибка загрузки', errorMessage(error)) }).finally(() => { if (mounted) setLoading(false) })
+    return () => { mounted = false }
+  }, [addToast])
+
+  useEffect(() => {
+    let mounted = true
+    void window.sheller.snippets.list()
+      .then((list) => { if (mounted) setSnippets(list) })
+      .catch((error) => { if (mounted) addToast('error', 'Не удалось загрузить сниппеты', errorMessage(error)) })
     return () => { mounted = false }
   }, [addToast])
 
@@ -145,6 +156,7 @@ export default function App(): JSX.Element {
   }, [])
 
   const activeSession = useMemo(() => sessions.find((session) => session.id === activeSessionId) ?? null, [sessions, activeSessionId])
+  const quickAccessSnippets = useMemo(() => snippets.filter((snippet) => snippet.quickAccess), [snippets])
 
   const openSession = useCallback((profile: ConnectionProfile): void => {
     const sessionId = crypto.randomUUID()
@@ -329,6 +341,25 @@ export default function App(): JSX.Element {
     window.sheller.sessions.write(activeSession.id, cmd)
   }, [activeSession])
 
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'connected') return
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.repeat || event.isComposing) return
+      const shortcut = shortcutFromEvent(event)
+      if (!shortcut || isTypingTarget(event.target)) return
+      if (document.querySelector('.modal-backdrop')) return
+      const snippet = snippets.find((item) => item.shortcut === shortcut)
+      if (!snippet) return
+      event.preventDefault()
+      event.stopPropagation()
+      window.sheller.sessions.write(activeSession.id, snippet.command)
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [activeSession, snippets])
+
   const activeTunnelCount = activeSession ? runningTunnels(activeSession.tunnels) : 0
 
   return (
@@ -359,8 +390,10 @@ export default function App(): JSX.Element {
             {activeSession && tunnelPanelOpen && <TunnelPanel session={activeSession} onClose={() => setTunnelPanelOpen(false)} onEditProfile={() => editSessionProfile(activeSession.profile)} onStartTunnel={startTunnel} onStopTunnel={stopTunnel} />}
             {activeSession && sftpPanelOpen && <SFTPPanel session={activeSession} onClose={() => setSftpPanelOpen(false)} />}
             {snippetsPanelOpen && (
-              <SnippetsPanel 
-                onClose={() => setSnippetsPanelOpen(false)} 
+              <SnippetsPanel
+                snippets={snippets}
+                onSnippetsChange={setSnippets}
+                onClose={() => setSnippetsPanelOpen(false)}
                 onPaste={pasteCommandToActive}
               />
             )}
@@ -371,6 +404,13 @@ export default function App(): JSX.Element {
               />
             )}
           </div>
+          {activeSession && activeSession.status === 'connected' && quickAccessSnippets.length > 0 && (
+            <SnippetQuickBar
+              snippets={quickAccessSnippets}
+              onRun={pasteCommandToActive}
+              onManage={() => setSnippetsPanelOpen(true)}
+            />
+          )}
           {activeSession && <SessionStatusBar 
           session={activeSession} 
           tunnelPanelOpen={tunnelPanelOpen} 
@@ -406,6 +446,15 @@ export default function App(): JSX.Element {
       {loading && profiles.length === 0 && <div className="app-loading" aria-hidden="true"><Loader2 size={18} className="spin" /></div>}
     </div>
   )
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.classList.contains('xterm-helper-textarea')) return false
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target.isContentEditable
 }
 
 function SessionStatusBar({ 

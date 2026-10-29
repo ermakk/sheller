@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isReservedShortcut, normalizeShortcut } from '../shared/shortcuts'
 import type { Snippet } from '../shared/types'
 
 export class SnippetStore {
@@ -27,7 +28,19 @@ export class SnippetStore {
       const raw = await fs.readFile(this.filePath, 'utf8')
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
-        this.data = parsed.filter((item): item is Snippet => Boolean(item) && typeof item.id === 'string')
+        this.data = parsed
+          .filter((item): item is Snippet => Boolean(item) && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.command === 'string')
+          .map((item) => {
+            const shortcut = typeof item.shortcut === 'string' ? normalizeShortcut(item.shortcut) ?? undefined : undefined
+            return {
+              id: item.id,
+              name: item.name,
+              command: item.command,
+              group: typeof item.group === 'string' ? item.group.trim() || undefined : undefined,
+              quickAccess: item.quickAccess === true,
+              ...(shortcut ? { shortcut } : {})
+            }
+          })
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
@@ -43,25 +56,40 @@ export class SnippetStore {
     return this.data
   }
 
- async save(input: Omit<Snippet, 'id'> & { id?: string }): Promise<Snippet> {
+  async save(input: Omit<Snippet, 'id'> & { id?: string }): Promise<Snippet> {
     await this.init()
-    if (!input.name.trim() || !input.command.trim()) throw new Error('Название и команда обязательны')
-    
-    const group = String(input.group ?? '').trim()
+    const name = String(input.name ?? '').trim()
+    const command = String(input.command ?? '')
+    if (!name || !command.trim()) throw new Error('Название и команда обязательны')
+
+    const group = String(input.group ?? '').trim() || undefined
+    const rawShortcut = typeof input.shortcut === 'string' ? input.shortcut.trim() : ''
+    const shortcut = rawShortcut ? normalizeShortcut(rawShortcut) ?? undefined : undefined
+    if (rawShortcut && !shortcut) throw new Error('Некорректное сочетание клавиш')
+    if (shortcut && isReservedShortcut(shortcut)) throw new Error('Это сочетание зарезервировано терминалом')
+
+    const duplicate = shortcut
+      ? this.data.find((item) => item.id !== input.id && item.shortcut?.toLowerCase() === shortcut.toLowerCase())
+      : undefined
+    if (duplicate) throw new Error(`Сочетание ${shortcut} уже назначено сниппету «${duplicate.name}»`)
+
+    const quickAccess = input.quickAccess === true
 
     if (input.id) {
       const index = this.data.findIndex((s) => s.id === input.id)
       if (index === -1) throw new Error('Сниппет не найден')
-      this.data[index] = { ...this.data[index], name: input.name, command: input.command, group }
+      this.data[index] = { ...this.data[index], name, command, group, shortcut, quickAccess }
       await this.persist()
       return this.data[index]
     }
 
     const snippet: Snippet = {
       id: randomUUID(),
-      name: input.name,
-      command: input.command,
-      group
+      name,
+      command,
+      group,
+      shortcut,
+      quickAccess
     }
     this.data.push(snippet)
     await this.persist()

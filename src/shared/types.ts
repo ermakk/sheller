@@ -76,6 +76,8 @@ export interface Snippet {
   name: string
   command: string
   group?: string
+  shortcut?: string
+  quickAccess?: boolean
 }
 
 
