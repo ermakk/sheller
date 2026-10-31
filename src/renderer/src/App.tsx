@@ -478,10 +478,11 @@ function SessionStatusBar({
         <span className="statusbar-divider" />
         <span className="statusbar-host">{profileSubtitle(session.profile)}</span>
         {session.profile.protocol === 'telnet' && <span className="statusbar-chip">TELNET</span>}
+        {session.profile.protocol === 'mosh' && <span className="statusbar-chip">MOSH</span>}
       </div>
       <div className="statusbar-right">
         <span className="statusbar-hint">Ctrl+Shift+V — вставка</span>
-        {session.profile.protocol === 'ssh' && (
+        {session.profile.protocol !== 'telnet' && (
           <>
             <button type="button" className="statusbar-button" onClick={onToggleSftp} disabled={session.status !== 'connected'} title="SFTP Панель"><FolderUp size={14} />SFTP</button>
             <button type="button" className="statusbar-button" onClick={() => onUpload('file')} disabled={session.status !== 'connected'} title="Загрузить файлы"><ArrowUpFromLine size={14} />Файлы</button>

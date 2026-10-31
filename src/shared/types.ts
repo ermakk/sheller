@@ -69,7 +69,7 @@ export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error'
 export type SessionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 export type TransferDirection = 'upload' | 'download'
 export type ProxyType = 'none' | 'socks5' | 'http'
-export type Protocol = 'ssh' | 'telnet'
+export type Protocol = 'ssh' | 'mosh' | 'telnet'
 
 export interface Snippet {
   id: string
@@ -155,6 +155,7 @@ export interface ConnectionProfile {
   proxyPassword?: string
   bindAddress?: string 
   hostKey?: string
+  moshClientPath?: string
   hasPassword: boolean
   hasPassphrase: boolean
   createdAt: string
@@ -183,6 +184,7 @@ export interface ProfileDraft {
   proxyPassword?: string
   bindAddress?: string
   hostKey?: string
+  moshClientPath?: string
   password?: string
   passphrase?: string
   clearPassword?: boolean

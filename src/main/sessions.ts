@@ -1,15 +1,18 @@
+import { app } from 'electron'
 import { Client, createAgent, type ClientChannel, type ConnectConfig, type SFTPWrapper, type TcpConnectionDetails, type Stats, type FileEntry } from 'ssh2'
-import { createReadStream, createWriteStream, promises as fs } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, promises as fs } from 'node:fs'
 import { createServer, connect as createSocket, type Server, type Socket } from 'node:net'
 import { homedir } from 'node:os'
-import { basename, join, posix } from 'node:path'
+import { basename, delimiter, dirname, join, posix } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { Transform, type Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { SocksClient } from 'socks'
 import * as http from 'node:http'
 import * as net from 'node:net'
+import { spawn as spawnPty, type IPty } from 'node-pty'
 import Zmodem from 'zmodem2'
 import { Telnet } from 'telnet-client'
 
@@ -50,6 +53,8 @@ interface ManagedSession {
   client?: Client
   telnetConnection?: Telnet
   stream?: ClientChannel | any
+  moshPty?: IPty
+  moshServerStream?: ClientChannel
   decoder: StringDecoder
   tunnels: Map<string, TunnelState>
   remoteHandler?: (details: TcpConnectionDetails, accept: () => ClientChannel, reject: () => void) => void
@@ -70,6 +75,93 @@ interface TunnelState {
   boundHost?: string
   boundPort?: number
   message?: string
+}
+
+interface MoshClientConfig {
+  kind: 'native' | 'wsl'
+  file: string
+  bundled?: boolean
+}
+
+interface MoshServerInfo {
+  stream: ClientChannel
+  port: number
+  key: string
+}
+
+function findExecutable(name: string): string | null {
+  const hasExtension = /\.[^\\/]+$/.test(name)
+  const extensions = hasExtension
+    ? ['']
+    : (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+  const directories = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      const candidate = join(directory, hasExtension ? name : `${name}${extension.toLowerCase()}`)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+function findBundledMoshClient(): string | null {
+  if (process.platform !== 'win32') return null
+  const root = app.isPackaged
+    ? join(process.resourcesPath, 'mosh')
+    : join(app.getAppPath(), 'third_party', 'mosh')
+  const candidate = join(root, 'usr', 'bin', 'mosh-client.exe')
+  return existsSync(candidate) ? candidate : null
+}
+
+function findNativeMoshClient(): string | null {
+  const fromPath = findExecutable('mosh-client.exe') ?? findExecutable('mosh-client')
+  if (fromPath) return fromPath
+  const candidates = [
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Mosh', 'mosh-client.exe'),
+    join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Mosh', 'mosh-client.exe'),
+    'C:\\msys64\\usr\\bin\\mosh-client.exe',
+    'C:\\cygwin64\\bin\\mosh-client.exe',
+    'C:\\cygwin\\bin\\mosh-client.exe'
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+function isWslCommand(value: string): boolean {
+  const name = basename(value).toLowerCase()
+  return name === 'wsl' || name === 'wsl.exe'
+}
+
+function withWslEnv(value: string | undefined): string {
+  const entries = new Map<string, string>()
+  for (const entry of (value ?? '').split(':')) {
+    if (!entry) continue
+    entries.set(entry.split('/')[0], entry)
+  }
+  for (const name of ['MOSH_KEY', 'TERM', 'LANG']) {
+    if (!entries.has(name)) entries.set(name, name)
+  }
+  return Array.from(entries.values()).join(':')
+}
+
+function runCommand(file: string, args: string[], timeout: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result: { stdout: string; stderr: string; code: number | null }): void => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+    const child = execFile(file, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+      const code = typeof (error as NodeJS.ErrnoException | null)?.code === 'number'
+        ? Number((error as NodeJS.ErrnoException).code)
+        : error ? 1 : 0
+      finish({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code })
+    })
+    child.on('error', () => finish({ stdout: '', stderr: '', code: null }))
+  })
 }
 
 export function describeError(error: unknown): string {
@@ -101,6 +193,7 @@ export class SessionManager {
   private readonly MAX_CONCURRENT_FILES = 2
 
   private statsIntervals = new Map<string, NodeJS.Timeout>()
+  private moshWslChecks = new Map<string, Promise<boolean>>()
 
   constructor(private readonly store: ProfileStore, private readonly send: Send) {}
 
@@ -116,8 +209,10 @@ export class SessionManager {
       if (existing.status === 'connected') {
         existing.cols = normalizeDimension(request.cols, existing.cols, 2, 1000)
         existing.rows = normalizeDimension(request.rows, existing.rows, 2, 500)
-        if (existing.stream && existing.profile.protocol === 'ssh') {
+        if (existing.profile.protocol === 'ssh' && existing.stream) {
           existing.stream.setWindow(existing.rows, existing.cols, 0, 0)
+        } else if (existing.profile.protocol === 'mosh') {
+          existing.moshPty?.resize(existing.cols, existing.rows)
         }
         return { ok: true }
       }
@@ -152,6 +247,17 @@ export class SessionManager {
     this.sessions.set(sessionId, session)
     this.sendStatus({ sessionId, status: 'connecting' })
     this.emitTunnels(session)
+
+    let moshClient: MoshClientConfig | undefined
+    if (publicProfile.protocol === 'mosh') {
+      try {
+        moshClient = await this.resolveMoshClient(publicProfile)
+      } catch (error) {
+        const msg = describeError(error)
+        this.endSession(session, 'error', msg)
+        return { ok: false, error: msg }
+      }
+    }
 
     try {
       if (publicProfile.protocol === 'telnet') {
@@ -194,7 +300,7 @@ export class SessionManager {
                   jumpProfileId: hop.jumpProfileId, tunnels: hop.tunnels, askPassword: hop.askPassword,
                   keepaliveInterval: hop.keepaliveInterval, proxyType: hop.proxyType, proxyHost: hop.proxyHost,
                   proxyPort: hop.proxyPort, proxyUsername: hop.proxyUsername, proxyPassword: hop.proxyPassword,
-                  bindAddress: hop.bindAddress, hostKey: fingerprint
+                  bindAddress: hop.bindAddress, hostKey: fingerprint, moshClientPath: hop.moshClientPath
                 }
                 void this.store.update(hop.id, draft).catch((err) => console.error('Failed to save host key:', err))
                 verify(true)
@@ -257,6 +363,11 @@ export class SessionManager {
       if (!targetClient) throw new Error('Не удалось установить SSH-соединение')
       session.client = targetClient
 
+      if (publicProfile.protocol === 'mosh' && moshClient) {
+        const directMosh = chain.length === 1 && !(target.proxyType !== 'none' && target.proxyHost)
+        return await this.connectMosh(session, targetClient, target, moshClient, directMosh)
+      }
+
       session.stream = await new Promise((res, rej) => {
         targetClient!.shell({ term: 'xterm-256color', cols: session.cols, rows: session.rows }, (err, stream) => err ? rej(err) : res(stream))
       })
@@ -275,6 +386,164 @@ export class SessionManager {
       this.endSession(session, 'error', msg)
       return { ok: false, error: msg }
     }
+  }
+
+  private async resolveMoshClient(profile: ConnectionProfile): Promise<MoshClientConfig> {
+    const configured = profile.moshClientPath?.trim()
+    if (configured) {
+      if (isWslCommand(configured)) {
+        const wsl = findExecutable(configured) ?? (existsSync('C:\\Windows\\System32\\wsl.exe') ? 'C:\\Windows\\System32\\wsl.exe' : null)
+        if (!wsl) throw new Error('WSL не найден. Установите WSL или укажите путь к mosh-client в настройках профиля.')
+        if (!(await this.hasWslMoshClient(wsl))) {
+          throw new Error('В WSL не найден mosh-client. Установите Mosh: sudo apt install mosh')
+        }
+        return { kind: 'wsl', file: wsl }
+      }
+      if (!existsSync(configured)) {
+        throw new Error(`Mosh-клиент не найден: ${configured}`)
+      }
+      return { kind: 'native', file: configured }
+    }
+
+    const bundled = findBundledMoshClient()
+    if (bundled) return { kind: 'native', file: bundled, bundled: true }
+
+    const native = findNativeMoshClient()
+    if (native) return { kind: 'native', file: native }
+
+    const wsl = findExecutable('wsl.exe') ?? (existsSync('C:\\Windows\\System32\\wsl.exe') ? 'C:\\Windows\\System32\\wsl.exe' : null)
+    if (wsl && await this.hasWslMoshClient(wsl)) return { kind: 'wsl', file: wsl }
+
+    throw new Error('Не найден mosh-client. Переустановите Sheller, установите Mosh/WSL или укажите путь к mosh-client в настройках профиля.')
+  }
+
+  private hasWslMoshClient(wsl: string): Promise<boolean> {
+    const cached = this.moshWslChecks.get(wsl)
+    if (cached) return cached
+    const check = runCommand(wsl, ['-e', 'sh', '-lc', 'command -v mosh-client'], 10000)
+      .then((result) => {
+        const found = result.code === 0 && result.stdout.trim().length > 0
+        if (!found) this.moshWslChecks.delete(wsl)
+        return found
+      })
+      .catch(() => {
+        this.moshWslChecks.delete(wsl)
+        return false
+      })
+    this.moshWslChecks.set(wsl, check)
+    return check
+  }
+
+  private startMoshServer(client: Client, useSshConnection: boolean): Promise<MoshServerInfo> {
+    const bindFlag = useSshConnection ? '-s ' : ''
+    const command = `sh -c 'for p in mosh-server /usr/local/bin/mosh-server /opt/homebrew/bin/mosh-server /snap/bin/mosh-server; do if command -v "$p" >/dev/null 2>&1; then exec "$p" new -c 256 ${bindFlag}-l "LANG=\${LANG:-C.UTF-8}"; fi; done; echo SHELLER_MOSH_SERVER_MISSING >&2; exit 127'`
+    return new Promise<MoshServerInfo>((resolve, reject) => {
+      client.exec(command, (error, stream) => {
+        if (error) { reject(error); return }
+        let settled = false
+        let output = ''
+        let timer: NodeJS.Timeout | undefined
+
+        const cleanup = (): void => {
+          if (timer) clearTimeout(timer)
+          stream.removeListener('data', onData)
+          stream.stderr.removeListener('data', onData)
+          stream.removeListener('close', onClose)
+          stream.removeListener('error', onError)
+        }
+        const fail = (message: string): void => {
+          if (settled) return
+          settled = true
+          cleanup()
+          try { stream.close() } catch { undefined }
+          reject(new Error(message))
+        }
+        const onData = (data: Buffer): void => {
+          output = `${output}${data.toString('utf8')}`.slice(-4096)
+          const match = output.match(/MOSH CONNECT (\d{1,5}) (\S+)/)
+          if (!match || settled) return
+          settled = true
+          cleanup()
+          stream.on('error', () => undefined)
+          resolve({ stream, port: Number(match[1]), key: match[2] })
+        }
+        const onClose = (): void => {
+          if (output.includes('SHELLER_MOSH_SERVER_MISSING') || /not found|No such file/i.test(output)) {
+            fail('На сервере не установлен mosh-server. Установите пакет mosh.')
+            return
+          }
+          const details = output.trim()
+          fail(details ? `mosh-server: ${details}` : 'mosh-server завершил работу до запуска клиента')
+        }
+        const onError = (streamError: Error): void => fail(describeError(streamError))
+
+        stream.on('data', onData)
+        stream.stderr.on('data', onData)
+        stream.once('close', onClose)
+        stream.once('error', onError)
+        timer = setTimeout(() => fail('mosh-server не ответил за 15 секунд'), 15000)
+        timer.unref()
+      })
+    })
+  }
+
+  private async connectMosh(session: ManagedSession, client: Client, target: ResolvedProfile, moshClient: MoshClientConfig, useSshConnection: boolean): Promise<ApiResult> {
+    const server = await this.startMoshServer(client, useSshConnection)
+    session.moshServerStream = server.stream
+    client.on('error', () => undefined)
+
+    try {
+      session.moshPty = this.spawnMoshClient(moshClient, target.host, server.port, server.key, session)
+    } catch (error) {
+      try { server.stream.signal('TERM'); server.stream.close() } catch { undefined }
+      throw error
+    }
+
+    session.moshPty.onData((data) => {
+      if (!session.closed) this.send(IPC.eventData, { sessionId: session.id, data })
+    })
+    session.moshPty.onExit(({ exitCode }) => {
+      if (session.closed) return
+      this.endSession(
+        session,
+        exitCode === 0 ? 'disconnected' : 'error',
+        exitCode === 0 ? 'Mosh-сеанс завершён' : `mosh-client завершился с кодом ${exitCode}`
+      )
+    })
+
+    session.status = 'connected'
+    this.ensureRemoteDispatcher(session)
+    this.sendStatus({ sessionId: session.id, status: 'connected' })
+    void this.store.touch(target.id).catch(() => {})
+    void this.startAutoTunnels(session)
+    return { ok: true }
+  }
+
+  private spawnMoshClient(config: MoshClientConfig, host: string, port: number, key: string, session: ManagedSession): IPty {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      MOSH_KEY: key,
+      TERM: 'xterm-256color',
+      LANG: process.env.LANG || 'C.UTF-8'
+    }
+    let args: string[]
+    if (config.kind === 'wsl') {
+      env.WSLENV = withWslEnv(process.env.WSLENV)
+      args = ['-e', 'sh', '-lc', 'exec mosh-client "$1" "$2"', 'mosh-client', host, String(port)]
+    } else {
+      args = [host, String(port)]
+      if (config.bundled) {
+        env.TERMINFO = '/usr/lib/terminfo'
+        env.PATH = `${dirname(config.file)};${env.PATH ?? ''}`
+      }
+    }
+    return spawnPty(config.file, args, {
+      name: 'xterm-256color',
+      cols: session.cols,
+      rows: session.rows,
+      cwd: homedir(),
+      env
+    })
   }
 
   private async connectTelnet(session: ManagedSession, host: string, port: number): Promise<ApiResult> {
@@ -425,6 +694,8 @@ export class SessionManager {
     
     if (session.profile.protocol === 'telnet' && session.telnetConnection) {
       session.telnetConnection.write(data)
+    } else if (session.profile.protocol === 'mosh' && session.moshPty) {
+      session.moshPty.write(data)
     } else if (session.stream) {
       session.stream.write(data)
     }
@@ -437,15 +708,18 @@ export class SessionManager {
     const nextRows = normalizeDimension(rows, session.rows, 2, 500)
     session.cols = nextCols
     session.rows = nextRows
-    if (session.stream && session.status === 'connected' && session.profile.protocol === 'ssh') {
+    if (session.status !== 'connected') return
+    if (session.profile.protocol === 'ssh' && session.stream) {
       session.stream.setWindow(nextRows, nextCols, 0, 0)
+    } else if (session.profile.protocol === 'mosh' && session.moshPty) {
+      session.moshPty.resize(nextCols, nextRows)
     }
   }
 
   async startTunnel(sessionId: string, tunnelId: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
     if (!session || session.closed || session.status !== 'connected') return { ok: false, error: 'Сначала подключитесь к серверу' }
-    if (session.profile.protocol !== 'ssh') return { ok: false, error: 'Туннели доступны только для SSH' }
+    if (session.profile.protocol === 'telnet') return { ok: false, error: 'Туннели доступны только для SSH и Mosh' }
     const tunnel = session.tunnels.get(tunnelId)
     if (!tunnel) return { ok: false, error: 'Туннель не найден' }
     try { await this.startTunnelInternal(session, tunnel); return { ok: true } } 
@@ -469,7 +743,7 @@ export class SessionManager {
    // Добавляем таймаут для exec, чтобы повисшие команды не блокировали очередь
   private async execCommand(sessionId: string, command: string): Promise<{ output: string; code: number | null }> {
     const session = this.sessions.get(sessionId)
-    if (!session || !session.client || session.profile.protocol !== 'ssh') {
+    if (!session || !session.client || session.profile.protocol === 'telnet') {
       throw new Error('Нет активного SSH-соединения')
     }
     return new Promise((resolve, reject) => {
@@ -559,7 +833,7 @@ export class SessionManager {
  async startStatsPolling(sessionId: string): Promise<void> {
     if (this.statsIntervals.has(sessionId)) return
     const session = this.sessions.get(sessionId)
-    if (!session || session.closed || session.status !== 'connected' || session.profile.protocol !== 'ssh') return
+    if (!session || session.closed || session.status !== 'connected' || session.profile.protocol === 'telnet') return
 
     const script = `
       cpu=$(vmstat 1 2 | tail -1 | awk '{print 100 - $15}')
@@ -617,7 +891,7 @@ export class SessionManager {
 
   async uploadPath(sessionId: string, localPath: string, remoteDir: string, transferId: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') return { ok: false, error: 'SFTP доступен только для SSH' }
+    if (session?.profile.protocol === 'telnet') return { ok: false, error: 'SFTP доступен только для SSH и Mosh' }
     
     const fileName = basename(localPath)
     const emit = (bytes: number, total: number, done: boolean, error?: string) => {
@@ -657,7 +931,7 @@ export class SessionManager {
 
   async downloadPath(sessionId: string, remotePath: string, localDir: string, transferId: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') return { ok: false, error: 'SFTP доступен только для SSH' }
+    if (session?.profile.protocol === 'telnet') return { ok: false, error: 'SFTP доступен только для SSH и Mosh' }
     
     const fileName = basename(remotePath)
     const emit = (bytes: number, total: number, done: boolean, error?: string) => {
@@ -698,7 +972,7 @@ export class SessionManager {
 
   async listRemote(sessionId: string, remotePath: string): Promise<RemoteFile[]> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') throw new Error('SFTP доступен только для SSH')
+    if (session?.profile.protocol === 'telnet') throw new Error('SFTP доступен только для SSH и Mosh')
     if (!session || session.closed || session.status !== 'connected') throw new Error('Сначала подключитесь к серверу')
     const sftp = await this.getSftp(sessionId)
     const normalized = await this.resolveRemotePath(sftp, remotePath)
@@ -721,7 +995,7 @@ export class SessionManager {
 
   async deleteRemote(sessionId: string, remotePath: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') return { ok: false, error: 'Только для SSH' }
+    if (session?.profile.protocol === 'telnet') return { ok: false, error: 'Только для SSH и Mosh' }
     if (!session || session.closed || session.status !== 'connected') return { ok: false, error: 'Нет соединения' }
     try {
       const sftp = await this.getSftp(sessionId)
@@ -733,7 +1007,7 @@ export class SessionManager {
 
   async mkdirRemote(sessionId: string, remotePath: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') return { ok: false, error: 'Только для SSH' }
+    if (session?.profile.protocol === 'telnet') return { ok: false, error: 'Только для SSH и Mosh' }
     if (!session || session.closed || session.status !== 'connected') return { ok: false, error: 'Нет соединения' }
     try {
       const sftp = await this.getSftp(sessionId)
@@ -744,7 +1018,7 @@ export class SessionManager {
 
   async renameRemote(sessionId: string, oldPath: string, newPath: string): Promise<ApiResult> {
     const session = this.sessions.get(sessionId)
-    if (session?.profile.protocol !== 'ssh') return { ok: false, error: 'Только для SSH' }
+    if (session?.profile.protocol === 'telnet') return { ok: false, error: 'Только для SSH и Mosh' }
     if (!session || session.closed || session.status !== 'connected') return { ok: false, error: 'Нет соединения' }
     try {
       const sftp = await this.getSftp(sessionId)
@@ -954,6 +1228,11 @@ export class SessionManager {
     session.hostKeyResolver = undefined
     session.hostKeyRejector = undefined
     try { session.stream?.end() } catch {}
+    try { session.moshPty?.kill() } catch {}
+    try {
+      session.moshServerStream?.signal('TERM')
+      session.moshServerStream?.close()
+    } catch {}
     try { session.telnetConnection?.destroy() } catch {}
     for (const c of session.clients) { try { c.end(); c.destroy() } catch {} }
     this.sessions.delete(session.id)

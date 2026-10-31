@@ -35,6 +35,7 @@ interface StoredProfile {
   proxyPassword?: StoredSecret
   bindAddress?: string
   hostKey?: string
+  moshClientPath?: string
   password?: StoredSecret
   passphrase?: StoredSecret
   createdAt: string
@@ -53,7 +54,7 @@ export interface ResolvedProfile extends ConnectionProfile {
 const TUNNEL_TYPES: TunnelType[] = ['local', 'remote', 'dynamic']
 const AUTH_METHODS: AuthMethod[] = ['password', 'key', 'agent']
 const PROXY_TYPES: ProxyType[] = ['none', 'socks5', 'http']
-const PROTOCOLS: Protocol[] = ['ssh', 'telnet']
+const PROTOCOLS: Protocol[] = ['ssh', 'mosh', 'telnet']
 
 export class ProfileStore {
   private data: StoreFile = { version: 1, profiles: [] }
@@ -144,7 +145,7 @@ export class ProfileStore {
     const password = draft.password ? this.encrypt(draft.password) : undefined
     const proxyPassword = draft.proxyPassword ? this.encrypt(draft.proxyPassword) : undefined
     
-    if (draft.protocol === 'ssh' && draft.authMethod === 'password' && !password && !draft.askPassword) {
+    if (draft.protocol !== 'telnet' && draft.authMethod === 'password' && !password && !draft.askPassword) {
       throw new Error('Укажите пароль или включите запрос при подключении')
     }
     
@@ -169,6 +170,7 @@ export class ProfileStore {
       proxyPassword,
       bindAddress: draft.bindAddress,
       hostKey: draft.hostKey,
+      moshClientPath: draft.moshClientPath,
       password,
       passphrase: draft.passphrase ? this.encrypt(draft.passphrase) : undefined,
       createdAt: now,
@@ -190,7 +192,7 @@ export class ProfileStore {
     const password = draft.clearPassword ? undefined : draft.password ? this.encrypt(draft.password) : existing.password
     const proxyPassword = draft.proxyPassword ? this.encrypt(draft.proxyPassword) : existing.proxyPassword
     
-    if (draft.protocol === 'ssh' && draft.authMethod === 'password' && !password && !draft.askPassword) {
+    if (draft.protocol !== 'telnet' && draft.authMethod === 'password' && !password && !draft.askPassword) {
       throw new Error('Введите новый пароль или включите запрос при подключении')
     }
 
@@ -215,6 +217,7 @@ export class ProfileStore {
       proxyPassword,
       bindAddress: draft.bindAddress,
       hostKey: draft.hostKey ?? existing.hostKey,
+      moshClientPath: draft.moshClientPath,
       password,
       passphrase: draft.clearPassphrase ? undefined : draft.passphrase ? this.encrypt(draft.passphrase) : existing.passphrase,
       createdAt: existing.createdAt,
@@ -311,7 +314,8 @@ export class ProfileStore {
         proxyPort: data.proxyPort,
         proxyUsername: data.proxyUsername,
         bindAddress: data.bindAddress,
-        hostKey: data.hostKey
+        hostKey: data.hostKey,
+        moshClientPath: data.moshClientPath
       } as unknown as ProfileDraft, id)
 
       let jumpProfileId: string | undefined
@@ -341,6 +345,7 @@ export class ProfileStore {
         proxyUsername: draft.proxyUsername,
         bindAddress: draft.bindAddress,
         hostKey: draft.hostKey,
+        moshClientPath: draft.moshClientPath,
         createdAt: now,
         updatedAt: now
       }
@@ -386,6 +391,7 @@ export class ProfileStore {
       proxyUsername: p.proxyUsername,
       bindAddress: p.bindAddress,
       hostKey: p.hostKey,
+      moshClientPath: p.moshClientPath,
       hasPassword: Boolean(p.password),
       hasPassphrase: Boolean(p.passphrase),
       createdAt: p.createdAt,
@@ -409,7 +415,7 @@ export class ProfileStore {
 
     const authMethod = AUTH_METHODS.includes(input.authMethod) ? input.authMethod : 'password'
     const privateKeyPath = input.privateKeyPath?.trim() || undefined
-    if (protocol === 'ssh' && authMethod === 'key' && !privateKeyPath) {
+    if (protocol !== 'telnet' && authMethod === 'key' && !privateKeyPath) {
       throw new Error('Укажите путь к приватному ключу')
     }
     let jumpProfileId = input.jumpProfileId?.trim() || undefined
@@ -457,6 +463,7 @@ export class ProfileStore {
       proxyPassword: input.proxyPassword || undefined,
       bindAddress: input.bindAddress?.trim() || undefined,
       hostKey: typeof input.hostKey === 'string' ? input.hostKey : undefined,
+      moshClientPath: input.moshClientPath?.trim() || undefined,
       password: input.password || undefined,
       passphrase: input.passphrase || undefined,
       clearPassword: Boolean(input.clearPassword),

@@ -52,6 +52,7 @@ interface FormState {
   proxyUsername: string
   proxyPassword: string
   bindAddress: string
+  moshClientPath: string
   tunnels: TunnelForm[]  
 }
 
@@ -70,7 +71,7 @@ function initialForm(profile: ConnectionProfile | null): FormState {
       authMethod: 'password', privateKeyPath: '', jumpProfileId: '', password: '', passphrase: '',
       clearPassword: false, clearPassphrase: false, askPassword: false, keepaliveInterval: '15000',
       proxyType: 'none', proxyHost: '', proxyPort: '', proxyUsername: '', proxyPassword: '', 
-      bindAddress: '', tunnels: []
+      bindAddress: '', moshClientPath: '', tunnels: []
     }
   }
   return {
@@ -95,6 +96,7 @@ function initialForm(profile: ConnectionProfile | null): FormState {
     proxyUsername: profile.proxyUsername ?? '',
     proxyPassword: '',
     bindAddress: profile.bindAddress ?? '',
+    moshClientPath: profile.moshClientPath ?? '',
     tunnels: profile.tunnels.map(tunnelToForm)
   }
 }
@@ -119,11 +121,11 @@ function validate(form: FormState, profile: ConnectionProfile | null): string | 
   const sshPort = parsePort(form.port, false)
   if (sshPort === null) return 'Порт должен быть от 1 до 65535'
   
-  if (form.protocol === 'ssh' && form.authMethod === 'password' && !form.askPassword) {
+  if (form.protocol !== 'telnet' && form.authMethod === 'password' && !form.askPassword) {
     const hasSaved = Boolean(profile?.hasPassword) && !form.clearPassword
     if (!form.password && !hasSaved) return 'Введите пароль или включите запрос при подключении'
   }
-  if (form.protocol === 'ssh' && form.authMethod === 'key' && !form.privateKeyPath.trim()) {
+  if (form.protocol !== 'telnet' && form.authMethod === 'key' && !form.privateKeyPath.trim()) {
     return 'Укажите путь к приватному ключу'
   }
 
@@ -172,6 +174,7 @@ function buildDraft(form: FormState): ProfileDraft {
     proxyUsername: hasProxy ? form.proxyUsername.trim() || undefined : undefined,
     proxyPassword: hasProxy ? form.proxyPassword || undefined : undefined,
     bindAddress: form.bindAddress.trim() || undefined,
+    moshClientPath: form.moshClientPath.trim() || undefined,
     password: form.askPassword ? undefined : form.password || undefined,
     passphrase: form.passphrase || undefined, clearPassword: form.askPassword ? true : form.clearPassword,
     clearPassphrase: form.clearPassphrase
@@ -278,6 +281,7 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                     if (!profile) update('port', proto === 'telnet' ? '23' : '22')
                   }}>
                     <option value="ssh">SSH</option>
+                    <option value="mosh">Mosh</option>
                     <option value="telnet">Telnet</option>
                   </select>
                 </label>
@@ -294,9 +298,14 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                   </div>
                 </label>
               </div>
+              {form.protocol === 'mosh' && (
+                <p className="field-hint">
+                  Mosh использует SSH для запуска mosh-server, затем обмен идёт по UDP. На сервере должен быть установлен mosh-server; локальный mosh-client уже включён в Sheller.
+                </p>
+              )}
             </section>
 
-            {form.protocol === 'ssh' && (
+            {form.protocol !== 'telnet' && (
               <>
                 <section className="form-section">
                   <div className="form-section-title">
@@ -395,6 +404,20 @@ export function ConnectionModal({ profile, profiles, onClose, onSave, onDelete, 
                       Если указан IP, соединение пойдет строго через этот VPN-интерфейс (работает, даже если VPN не является системным по умолчанию).
                     </span>
                   </label>
+                  {form.protocol === 'mosh' && (
+                    <label className="field" style={{ marginTop: 12 }}>
+                      <span className="field-label">Mosh-клиент</span>
+                      <input
+                        value={form.moshClientPath}
+                        onChange={(event) => update('moshClientPath', event.target.value)}
+                        placeholder="Встроенный клиент (оставьте пустым) или путь к mosh-client.exe"
+                        spellCheck={false}
+                      />
+                      <span className="field-hint">
+                        Оставьте пустым, чтобы использовать встроенный mosh-client. Можно указать свой mosh-client.exe или wsl для Mosh из WSL.
+                      </span>
+                    </label>
+                  )}
                 </section>
 
                 <section className="form-section">
