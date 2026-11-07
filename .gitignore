@@ -6,3 +6,6 @@ dist/
 .DS_Store
 *.tsbuildinfo
 coverage/
+.ai-factory/
+.agents/
+.opencode/
