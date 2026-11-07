@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "skills": {
+    "electron-development": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "electron-development/SKILL.md",
+      "computedHash": "17ca5c91fbd91272f9314770f40fb0654be1112b3367407d3ab0d36110531a70",
+      "installMode": "copy"
+    },
+    "typescript-best-practices": {
+      "source": "cursor/plugins",
+      "sourceType": "github",
+      "skillPath": "harness/pstack/claude-code/skills/typescript-best-practices/SKILL.md",
+      "computedHash": "36f8d1838fef4895e25efbac756412766828656ddb38f08e197c1084c3e92357",
+      "installMode": "copy"
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/react-best-practices/SKILL.md",
+      "computedHash": "6b526d013e28073246a36f99b529bc43745d30832ecfa8217b359c34f260ca6b",
+      "installMode": "copy"
+    }
+  }
+}

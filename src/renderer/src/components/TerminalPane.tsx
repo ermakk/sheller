@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
 import {
   ClipboardPaste, Copy, Loader2, RefreshCw, SplitSquareHorizontal,
-  Unplug, X, Terminal as TerminalIcon, CalendarClock, Maximize2, Minimize2
+  Unplug, X, Terminal as TerminalIcon, CalendarClock, Maximize2, Minimize2, RadioTower
 } from 'lucide-react'
 import type { SessionTab } from '../types'
 import { errorMessage } from '../utils'
@@ -22,11 +22,14 @@ interface TerminalPaneProps {
   onSplit?: () => void
   onOpenSnippets?: () => void
   onOpenCron?: () => void
+  onInput?: (sessionId: string, data: string) => void
+  broadcasting?: boolean
 }
 
 export function TerminalPane({
   session, active, autoFocus = true, autoConnect = true, isFullscreenOwner = true,
-  onFullscreenOwnerChange, onReconnect, onClose, onFilesDropped, onSplit, onOpenSnippets, onOpenCron
+  onFullscreenOwnerChange, onReconnect, onClose, onFilesDropped, onSplit, onOpenSnippets, onOpenCron,
+  onInput, broadcasting = false
 }: TerminalPaneProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
@@ -34,6 +37,7 @@ export function TerminalPane({
   const activeRef = useRef(active)
   const fullscreenRef = useRef(false)
   const fullscreenOwnerRef = useRef(isFullscreenOwner)
+  const onInputRef = useRef(onInput)
   const [hasSelection, setHasSelection] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -63,6 +67,10 @@ export function TerminalPane({
   useEffect(() => {
     fullscreenOwnerRef.current = isFullscreenOwner
   }, [isFullscreenOwner])
+
+  useEffect(() => {
+    onInputRef.current = onInput
+  }, [onInput])
 
   const toggleFullscreen = (value: boolean) => {
     fullscreenRef.current = value
@@ -150,7 +158,10 @@ export function TerminalPane({
 
     const dataSubscription = window.sheller.events.onData((event) => { if (event.sessionId === session.id) terminal.write(event.data) })
     const selectionSubscription = terminal.onSelectionChange(() => { setHasSelection(terminal.hasSelection()) })
-    const inputSubscription = terminal.onData((data) => { window.sheller.sessions.write(session.id, data) })
+    const inputSubscription = terminal.onData((data) => {
+      if (onInputRef.current) onInputRef.current(session.id, data)
+      else window.sheller.sessions.write(session.id, data)
+    })
     const resizeSubscription = terminal.onResize(({ cols, rows }) => { window.sheller.sessions.resize(session.id, cols, rows) })
 
     terminal.attachCustomKeyEventHandler((event) => {
@@ -206,6 +217,12 @@ export function TerminalPane({
 
   const renderTools = () => (
     <>
+      {broadcasting && (
+        <span className="terminal-broadcast-chip" title="Мультивыполнение: ввод отправляется во все подключённые сессии">
+          <RadioTower size={12} />
+          MULTI
+        </span>
+      )}
       {onOpenSnippets && <button type="button" className="terminal-tool" onClick={onOpenSnippets} title="Сниппеты"><TerminalIcon size={14} /></button>}
       {onOpenCron && <button type="button" className="terminal-tool" onClick={onOpenCron} title="Cron планировщик"><CalendarClock size={14} /></button>}
       {onSplit && <button type="button" className="terminal-tool" onClick={onSplit} title="Разделить экран"><SplitSquareHorizontal size={14} /></button>}

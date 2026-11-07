@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, X, MoreVertical, MonitorUp, SplitSquareHorizontal } from 'lucide-react'
+import { Plus, X, MoreVertical, MonitorUp, SplitSquareHorizontal, RadioTower } from 'lucide-react'
 import type { SessionTab } from '../types'
 import { avatarGradient, initials, statusLabel } from '../utils'
 
@@ -12,6 +12,9 @@ interface TabBarProps {
   onNew: () => void
   onDetach?: (id: string) => void
   onMerge?: (sourceId: string, targetId: string) => void
+  broadcasting?: boolean
+  onToggleBroadcast?: () => void
+  broadcastTargetCount?: number
 }
 
 interface MenuState {
@@ -27,7 +30,10 @@ export function TabBar({
   onClose,
   onNew,
   onDetach,
-  onMerge
+  onMerge,
+  broadcasting = false,
+  onToggleBroadcast,
+  broadcastTargetCount
 }: TabBarProps): JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -128,6 +134,23 @@ export function TabBar({
           )
         })}
       </div>
+      {onToggleBroadcast && (
+        <button
+          type="button"
+          className={`tab-broadcast ${broadcasting ? 'is-active' : ''}`}
+          aria-pressed={broadcasting}
+          aria-label="Мультивыполнение"
+          title={broadcasting
+            ? `Ввод отправляется во все сессии (${broadcastTargetCount ?? 0})`
+            : 'Отправлять ввод во все сессии'}
+          onClick={onToggleBroadcast}
+        >
+          <RadioTower size={15} />
+          {broadcasting && broadcastTargetCount !== undefined && (
+            <span className="tab-broadcast-count">{broadcastTargetCount}</span>
+          )}
+        </button>
+      )}
       <button type="button" className="tab-add" onClick={onNew} title="Новое подключение">
         <Plus size={16} />
       </button>

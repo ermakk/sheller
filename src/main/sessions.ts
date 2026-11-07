@@ -701,6 +701,13 @@ export class SessionManager {
     }
   }
 
+  writeMany(sessionIds: string[], data: string): void {
+    if (!Array.isArray(sessionIds) || typeof data !== 'string' || data.length === 0) return
+    for (const sessionId of new Set(sessionIds)) {
+      if (typeof sessionId === 'string') this.write(sessionId, data)
+    }
+  }
+
   resize(sessionId: string, cols: number, rows: number): void {
     const session = this.sessions.get(sessionId)
     if (!session || session.closed) return

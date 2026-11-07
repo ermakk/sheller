@@ -256,6 +256,11 @@ function registerIpc(): void {
   ipcMain.on(IPC.sessionWrite, (_e, id: unknown, data: unknown) => {
     if (typeof id === 'string' && typeof data === 'string') manager.write(id, data)
   })
+  ipcMain.on(IPC.sessionWriteMany, (_e, ids: unknown, data: unknown) => {
+    if (Array.isArray(ids) && ids.every((id) => typeof id === 'string') && typeof data === 'string') {
+      manager.writeMany(ids, data)
+    }
+  })
   ipcMain.on(IPC.sessionResize, (_e, id: unknown, cols: unknown, rows: unknown) => {
     if (typeof id === 'string' && typeof cols === 'number' && typeof rows === 'number') manager.resize(id, cols, rows)
   })

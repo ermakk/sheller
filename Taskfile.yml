@@ -1,0 +1,95 @@
+version: '3'
+
+output: prefixed
+
+vars:
+  PROJECT:
+    sh: node -p "require('./package.json').name"
+  VERSION:
+    sh: git describe --tags --always --dirty
+  COMMIT:
+    sh: git rev-parse --short HEAD
+
+tasks:
+  default:
+    desc: Показать доступные задачи
+    cmds:
+      - task --list
+
+  version:
+    desc: Показать версию проекта и текущий коммит
+    cmds:
+      - echo "{{.PROJECT}} {{.VERSION}} ({{.COMMIT}})"
+
+  install:
+    desc: Установить зависимости (npm ci)
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules
+    cmds:
+      - npm ci
+
+  dev:
+    desc: Запустить приложение в режиме разработки
+    deps: [install]
+    cmds:
+      - npm run dev
+
+  build:
+    desc: Собрать main, preload и renderer в out/
+    deps: [install]
+    cmds:
+      - npm run build
+
+  preview:
+    desc: Предпросмотр собранного приложения
+    deps: [install]
+    cmds:
+      - npm run preview
+
+  dist:
+    desc: Собрать NSIS-установщик в release/
+    deps: [install]
+    cmds:
+      - npm run dist
+
+  typecheck:
+    desc: Проверить типы TypeScript
+    deps: [install]
+    cmds:
+      - npm run typecheck
+
+  test:
+    desc: Запустить тесты с покрытием
+    deps: [install]
+    cmds:
+      - npm run test:coverage
+
+  check:
+    desc: Запустить все доступные проверки
+    cmds:
+      - task: typecheck
+      - task: test
+
+  audit:
+    desc: Проверить runtime-зависимости на уязвимости
+    deps: [install]
+    cmds:
+      - npm audit --omit=dev --audit-level=high
+
+  ci:
+    desc: Локальный аналог CI (typecheck, test, audit, build)
+    cmds:
+      - task: typecheck
+      - task: test
+      - task: audit
+      - task: build
+
+  clean:
+    desc: Удалить артефакты сборки (out/ и release/)
+    cmds:
+      - >-
+        node -e "const fs = require('node:fs');
+        for (const dir of ['out', 'release']) fs.rmSync(dir, { recursive: true, force: true })"

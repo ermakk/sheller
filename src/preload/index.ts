@@ -35,6 +35,7 @@ const api: ShellerApi = {
     detach: (sessionId, profileId) => ipcRenderer.invoke(IPC.sessionDetach, sessionId, profileId),
     attach: (sessionId, profileId) => ipcRenderer.send(IPC.sessionAttach, sessionId, profileId),
     write: (id, data) => ipcRenderer.send(IPC.sessionWrite, id, data),
+    writeMany: (ids, data) => ipcRenderer.send(IPC.sessionWriteMany, ids, data),
     resize: (id, cols, rows) => ipcRenderer.send(IPC.sessionResize, id, cols, rows),
     startTunnel: (sid, tid) => ipcRenderer.invoke(IPC.sessionStartTunnel, sid, tid),
     stopTunnel: (sid, tid) => ipcRenderer.invoke(IPC.sessionStopTunnel, sid, tid),

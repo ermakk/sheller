@@ -42,6 +42,7 @@ export default function App(): JSX.Element {
   const [snippetsPanelOpen, setSnippetsPanelOpen] = useState(false)
   const [cronModalOpen, setCronModalOpen] = useState(false)
   const [systemMonitorOpen, setSystemMonitorOpen] = useState(false)
+  const [broadcast, setBroadcast] = useState(false)
   
   const [splitSessions, setSplitSessions] = useState<Record<string, { session: SessionTab; merged: boolean }>>({})
   const [pwdPrompt, setPwdPrompt] = useState<{ sessionId: string } | null>(null)
@@ -157,6 +158,33 @@ export default function App(): JSX.Element {
 
   const activeSession = useMemo(() => sessions.find((session) => session.id === activeSessionId) ?? null, [sessions, activeSessionId])
   const quickAccessSnippets = useMemo(() => snippets.filter((snippet) => snippet.quickAccess), [snippets])
+  const broadcastTargets = useMemo(() => {
+    const ids = new Set<string>()
+    for (const session of sessions) {
+      if (session.status === 'connected') ids.add(session.id)
+    }
+    for (const entry of Object.values(splitSessions)) {
+      if (entry.session.status === 'connected') ids.add(entry.session.id)
+    }
+    return [...ids]
+  }, [sessions, splitSessions])
+
+  const broadcastRef = useRef(broadcast)
+  useEffect(() => { broadcastRef.current = broadcast }, [broadcast])
+  const broadcastTargetsRef = useRef(broadcastTargets)
+  useEffect(() => { broadcastTargetsRef.current = broadcastTargets }, [broadcastTargets])
+
+  useEffect(() => {
+    if (sessions.length === 0) setBroadcast(false)
+  }, [sessions.length])
+
+  const writeToSession = useCallback((sessionId: string, data: string): void => {
+    if (broadcastRef.current && broadcastTargetsRef.current.length > 0) {
+      window.sheller.sessions.writeMany(broadcastTargetsRef.current, data)
+      return
+    }
+    window.sheller.sessions.write(sessionId, data)
+  }, [])
 
   const openSession = useCallback((profile: ConnectionProfile): void => {
     const sessionId = crypto.randomUUID()
@@ -338,8 +366,8 @@ export default function App(): JSX.Element {
 
   const pasteCommandToActive = useCallback((cmd: string) => {
     if (!activeSession) return
-    window.sheller.sessions.write(activeSession.id, cmd)
-  }, [activeSession])
+    writeToSession(activeSession.id, cmd)
+  }, [activeSession, writeToSession])
 
   useEffect(() => {
     if (!activeSession || activeSession.status !== 'connected') return
@@ -353,12 +381,12 @@ export default function App(): JSX.Element {
       if (!snippet) return
       event.preventDefault()
       event.stopPropagation()
-      window.sheller.sessions.write(activeSession.id, snippet.command)
+      writeToSession(activeSession.id, snippet.command)
     }
 
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [activeSession, snippets])
+  }, [activeSession, snippets, writeToSession])
 
   const activeTunnelCount = activeSession ? runningTunnels(activeSession.tunnels) : 0
 
@@ -368,7 +396,7 @@ export default function App(): JSX.Element {
       <div className="app-body">
         <Sidebar profiles={profiles} sessions={sessions} loading={loading} onConnect={openSession} onNew={() => openEditor(null)} onEdit={(profile) => setEditor({ profile })} onExport={handleExport} onImport={handleImport} />
         <main className="main-area">
-          {sessions.length > 0 && <TabBar sessions={sessions} activeId={activeSessionId} onActivate={setActiveSessionId} onClose={closeSession} onNew={() => openEditor(null)} onDetach={handleDetach} onMerge={handleMerge} />}
+          {sessions.length > 0 && <TabBar sessions={sessions} activeId={activeSessionId} onActivate={setActiveSessionId} onClose={closeSession} onNew={() => openEditor(null)} onDetach={handleDetach} onMerge={handleMerge} broadcasting={broadcast} onToggleBroadcast={() => setBroadcast((value) => !value)} broadcastTargetCount={broadcastTargets.length} />}
           <div className="workspace">
             {sessions.length === 0 && <Welcome profiles={profiles} sessions={sessions} onConnect={openSession} onNew={() => openEditor(null)} />}
             {sessions.map((session) => {
@@ -378,11 +406,11 @@ export default function App(): JSX.Element {
                 <div key={session.id} className={`session-wrapper ${isActive ? 'is-active' : ''}`}>
                   {secondary ? (
                     <div className="split-container vertical">
-                      <TerminalPane session={session} active={isActive} autoFocus={true} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={closeSplit} />
-                      <TerminalPane key={secondary.session.id} session={secondary.session} active={isActive} autoFocus={false} isFullscreenOwner={fullscreenPaneId === secondary.session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? secondary.session.id : null)} onReconnect={() => reconnectSession(secondary.session.id)} onClose={closeSplit} onFilesDropped={(paths) => uploadDroppedFiles(secondary.session.id, paths)} onSplit={closeSplit} />
+                      <TerminalPane session={session} active={isActive} autoFocus={true} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={closeSplit} onInput={writeToSession} broadcasting={broadcast} />
+                      <TerminalPane key={secondary.session.id} session={secondary.session} active={isActive} autoFocus={false} isFullscreenOwner={fullscreenPaneId === secondary.session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? secondary.session.id : null)} onReconnect={() => reconnectSession(secondary.session.id)} onClose={closeSplit} onFilesDropped={(paths) => uploadDroppedFiles(secondary.session.id, paths)} onSplit={closeSplit} onInput={writeToSession} broadcasting={broadcast} />
                     </div>
                   ) : (
-                    <TerminalPane session={session} active={isActive} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={isActive ? handleSplit : undefined} onOpenSnippets={isActive ? () => setSnippetsPanelOpen(true) : undefined} onOpenCron={isActive ? () => setCronModalOpen(true) : undefined} />
+                    <TerminalPane session={session} active={isActive} isFullscreenOwner={fullscreenPaneId === session.id} onFullscreenOwnerChange={(owner) => setFullscreenPaneId(owner ? session.id : null)} onReconnect={() => reconnectSession(session.id)} onClose={() => closeSession(session.id)} onFilesDropped={(paths) => uploadDroppedFiles(session.id, paths)} onSplit={isActive ? handleSplit : undefined} onOpenSnippets={isActive ? () => setSnippetsPanelOpen(true) : undefined} onOpenCron={isActive ? () => setCronModalOpen(true) : undefined} onInput={writeToSession} broadcasting={broadcast} />
                   )}
                 </div>
               )

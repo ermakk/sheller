@@ -17,6 +17,7 @@ export const IPC = {
   sessionConnect: 'session:connect',
   sessionDisconnect: 'session:disconnect',
   sessionWrite: 'session:write',
+  sessionWriteMany: 'session:write-many',
   sessionResize: 'session:resize',
   sessionStartTunnel: 'session:start-tunnel',
   sessionStopTunnel: 'session:stop-tunnel',
@@ -282,6 +283,7 @@ export interface ShellerApi {
     detach: (sessionId: string, profileId: string) => Promise<void>
     attach: (sessionId: string, profileId: string) => void
     write: (sessionId: string, data: string) => void
+    writeMany: (sessionIds: string[], data: string) => void
     resize: (sessionId: string, cols: number, rows: number) => void
     startTunnel: (sessionId: string, tunnelId: string) => Promise<ApiResult>
     stopTunnel: (sessionId: string, tunnelId: string) => Promise<ApiResult>
