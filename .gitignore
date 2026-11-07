@@ -9,3 +9,7 @@ coverage/
 .ai-factory/
 .agents/
 .opencode/
+.ai-factory.json
+opencode.json
+skills-lock.json
+AGENTS.md
